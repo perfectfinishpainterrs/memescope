@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+
+# env
+.env
+.env.local
+.env.production.local
+
+# build
+dist/
+build/
+
+# misc
+.DS_Store
+*.pem
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+
+# testing
+coverage/
+
+# turbo
+.turbo
+
+# vercel
+.vercel
+
+# supabase
+supabase/.temp/

@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap");
+
+:root {
+  --bg-deep: #060a10;
+  --bg-panel: #0b1120;
+  --bg-card: #111a2e;
+  --neon-green: #00ff88;
+  --neon-red: #ff3366;
+  --neon-blue: #00ccff;
+}
+
+body {
+  background: var(--bg-deep);
+  color: #e2e8f0;
+}
+
+/* Scanline overlay */
+.scanlines::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(0, 255, 136, 0.004) 3px,
+    rgba(0, 255, 136, 0.004) 4px
+  );
+}
+
+/* Ambient glow */
+.scanlines::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+      ellipse at 10% 0%,
+      rgba(0, 255, 136, 0.03) 0%,
+      transparent 50%
+    ),
+    radial-gradient(
+      ellipse at 90% 100%,
+      rgba(0, 204, 255, 0.02) 0%,
+      transparent 50%
+    );
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-deep);
+}
+::-webkit-scrollbar-thumb {
+  background: #1a2744;
+  border-radius: 3px;
+}
