@@ -49,17 +49,24 @@ export async function GET(request: NextRequest) {
       : rawTokens?.result || rawTokens?.tokens || [];
 
     // Parse holdings
-    const holdings: Holding[] = tokenList.map((t: any) => ({
-      mint: t.mint || t.token_address || t.associatedTokenAddress || "",
-      name: t.name || "Unknown",
-      symbol: t.symbol || "???",
-      amount: parseFloat(t.amount || t.balance || "0") / Math.pow(10, t.decimals || 0),
-      decimals: t.decimals || 0,
-      usdValue: parseFloat(t.usdValue || "0"),
-      price: parseFloat(t.usdPrice || "0"),
-      priceChange24h: 0,
-      logo: t.logo || t.thumbnail || null,
-    }));
+    // Moralis returns `amount` already formatted (human-readable) and `amountRaw` as the raw integer
+    const holdings: Holding[] = tokenList.map((t: any) => {
+      const amount = t.amountRaw
+        ? parseFloat(t.amountRaw) / Math.pow(10, t.decimals || 0)
+        : parseFloat(t.amount || t.balance || "0");
+
+      return {
+        mint: t.mint || t.token_address || t.associatedTokenAddress || "",
+        name: t.name || "Unknown",
+        symbol: t.symbol || "???",
+        amount,
+        decimals: t.decimals || 0,
+        usdValue: parseFloat(t.usdValue || "0"),
+        price: parseFloat(t.usdPrice || "0"),
+        priceChange24h: 0,
+        logo: t.logo || t.thumbnail || null,
+      };
+    });
 
     // Sort by USD value descending
     holdings.sort((a, b) => b.usdValue - a.usdValue);
@@ -83,19 +90,22 @@ export async function GET(request: NextRequest) {
 
     const solValue = solBalance * solPrice;
 
-    // Enrich top holdings with 24h price change from DexScreener
-    const topMints = holdings.slice(0, 10).map((h) => h.mint);
+    // Enrich ALL holdings with price data from DexScreener (Moralis doesn't return prices)
+    const allMints = holdings.map((h) => h.mint).filter(Boolean);
     const dexResults = await Promise.allSettled(
-      topMints.map((mint) => getDexScreenerData(mint))
+      allMints.map((mint) => getDexScreenerData(mint))
     );
     dexResults.forEach((result, i) => {
       if (result.status === "fulfilled" && result.value) {
         const h = holdings[i];
         h.priceChange24h = result.value.priceChange24h || 0;
-        if (!h.price && result.value.price) h.price = result.value.price;
-        if (!h.usdValue && h.price) h.usdValue = h.amount * h.price;
+        if (result.value.price) h.price = result.value.price;
+        if (h.price) h.usdValue = h.amount * h.price;
       }
     });
+
+    // Re-sort after enrichment
+    holdings.sort((a, b) => b.usdValue - a.usdValue);
 
     // Total portfolio value
     const totalTokenValue = holdings.reduce((sum, h) => sum + h.usdValue, 0);
