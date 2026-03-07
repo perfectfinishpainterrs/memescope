@@ -19,11 +19,16 @@ import {
   Droplets,
   BarChart3,
   TrendingUp,
+  Eye,
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
 } from 'lucide-react'
 import { useTokenData } from '@/hooks/use-token-data'
 import { useTokenSafety } from '@/hooks/use-token-safety'
 import { useTokenSentiment } from '@/hooks/use-token-sentiment'
 import { useTokenHolders } from '@/hooks/use-token-holders'
+import { useTokenOrderbook } from '@/hooks/use-token-orderbook'
 import { PriceChart } from '@/components/charts/price-chart'
 import { HolderTrendChart } from '@/components/charts/holder-trend-chart'
 import { HolderFlowChart } from '@/components/charts/holder-flow-chart'
@@ -68,6 +73,7 @@ export function TokenView({ address }: TokenViewProps) {
     tokenData?.ticker ?? null
   )
   const { holderData, isLoading: holderLoading } = useTokenHolders(address)
+  const { orderbookData, isLoading: orderbookLoading } = useTokenOrderbook(address)
 
   const safety = getSafetyGrade(safetyData?.score ?? 0)
   const changePositive = (tokenData?.priceChange24h ?? 0) >= 0
@@ -126,7 +132,9 @@ export function TokenView({ address }: TokenViewProps) {
     totalTweets: sentimentData?.totalTweets,
     topTweets: tweets?.slice(0, 5),
     meteoraPools: tokenData?.meteoraPools,
-  }), [address, chain, tokenData, holderData, safetyData, sentimentData, tweets])
+    orderbookAlerts: orderbookData?.alerts,
+    orderbookSummary: orderbookData?.summary,
+  }), [address, chain, tokenData, holderData, safetyData, sentimentData, tweets, orderbookData])
 
   // Save to token memory whenever data changes
   useEffect(() => {
@@ -142,7 +150,7 @@ export function TokenView({ address }: TokenViewProps) {
   // Auto-trigger research once all data is loaded
   useEffect(() => {
     if (research || researchLoading) return
-    if (tokenLoading || safetyLoading || sentimentLoading || holderLoading) return
+    if (tokenLoading || safetyLoading || sentimentLoading || holderLoading || orderbookLoading) return
     if (!tokenData) return
     generateResearch()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -487,6 +495,180 @@ export function TokenView({ address }: TokenViewProps) {
             </div>
           </Card>
         )}
+
+        {/* ── 3c. ORDER BOOK SNIFFER ── */}
+        <Card>
+          <div className="flex items-center gap-2 mb-3">
+            <Eye className="w-3.5 h-3.5 text-neon-magenta" />
+            <span className="text-[10px] text-text-dim uppercase tracking-widest font-mono font-semibold">
+              Order Book Sniffer
+            </span>
+            <span className="text-[9px] text-text-dim font-mono ml-auto">
+              {orderbookLoading ? '...' : `${orderbookData?.totalSwaps || 0} swaps analyzed`}
+            </span>
+          </div>
+
+          {orderbookLoading ? (
+            <div className="space-y-2">
+              {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+            </div>
+          ) : orderbookData ? (
+            <div className="space-y-3">
+              {/* Summary stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {[
+                  { label: 'Buy Pressure', value: `${orderbookData.summary?.buyPressure || 0}%`, color: (orderbookData.summary?.buyPressure || 0) > 50 ? 'text-neon-green' : 'text-neon-red' },
+                  { label: 'Buy Vol', value: `$${(orderbookData.summary?.buyVolume || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: 'text-neon-green' },
+                  { label: 'Sell Vol', value: `$${(orderbookData.summary?.sellVolume || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: 'text-neon-red' },
+                  { label: 'Unique Wallets', value: String(orderbookData.summary?.uniqueWallets || 0), color: 'text-neon-cyan' },
+                ].map((s) => (
+                  <div key={s.label} className="bg-bg-panel border border-border rounded-lg px-3 py-2">
+                    <span className="text-[8px] text-text-dim font-mono uppercase tracking-widest block">{s.label}</span>
+                    <span className={cn('text-sm font-mono font-bold', s.color)}>{s.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Buy/Sell pressure bar */}
+              <div className="h-2 rounded-full bg-bg-panel overflow-hidden flex">
+                <div
+                  className="h-full bg-neon-green/70 transition-all"
+                  style={{ width: `${orderbookData.summary?.buyPressure || 50}%` }}
+                />
+                <div
+                  className="h-full bg-neon-red/70 transition-all"
+                  style={{ width: `${100 - (orderbookData.summary?.buyPressure || 50)}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[8px] font-mono text-text-dim uppercase tracking-widest">
+                <span>{orderbookData.summary?.buys || 0} buys</span>
+                <span>Avg: ${(orderbookData.summary?.avgTradeSize || 0).toFixed(0)} | Max: ${(orderbookData.summary?.largestTrade || 0).toFixed(0)}</span>
+                <span>{orderbookData.summary?.sells || 0} sells</span>
+              </div>
+
+              {/* Alerts */}
+              {orderbookData.alerts?.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 text-neon-red" />
+                    <span className="text-[9px] text-neon-red uppercase tracking-widest font-mono font-semibold">
+                      Alerts ({orderbookData.alerts.length})
+                    </span>
+                  </div>
+                  {orderbookData.alerts.slice(0, 8).map((alert: any, i: number) => (
+                    <div
+                      key={i}
+                      className={cn(
+                        'flex items-start gap-2 px-3 py-2 rounded-lg border text-xs font-mono',
+                        alert.severity === 'critical' ? 'bg-neon-red/5 border-neon-red/30 text-neon-red' :
+                        alert.severity === 'high' ? 'bg-neon-red/5 border-neon-red/20 text-neon-red' :
+                        alert.severity === 'medium' ? 'bg-neon-yellow/5 border-neon-yellow/20 text-neon-yellow' :
+                        'bg-bg-panel border-border text-text-secondary'
+                      )}
+                    >
+                      <Badge variant={
+                        alert.severity === 'critical' || alert.severity === 'high' ? 'danger' :
+                        alert.severity === 'medium' ? 'warning' : 'default'
+                      }>
+                        {alert.severity.toUpperCase()}
+                      </Badge>
+                      <div className="min-w-0 flex-1">
+                        <span className="block">{alert.message}</span>
+                        {alert.wallet && (
+                          <span className="text-[9px] text-text-dim block mt-0.5">
+                            {shortenAddress(alert.wallet, 6)}
+                            {alert.timestamp && ` · ${new Date(alert.timestamp).toLocaleTimeString()}`}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Recent swaps table */}
+              <div className="space-y-1">
+                <span className="text-[9px] text-text-dim uppercase tracking-widest font-mono font-semibold block">
+                  Recent Swaps
+                </span>
+                <div className="grid grid-cols-[40px_1fr_80px_80px_70px] gap-2 px-3 py-1 text-[8px] text-text-dim uppercase tracking-widest font-mono border-b border-border">
+                  <span>Type</span>
+                  <span>Wallet</span>
+                  <span className="text-right">Tokens</span>
+                  <span className="text-right">Value</span>
+                  <span className="text-right">Time</span>
+                </div>
+                <div className="max-h-[300px] overflow-y-auto space-y-0.5">
+                  {(orderbookData.recentSwaps || []).map((swap: any) => (
+                    <div
+                      key={swap.hash}
+                      className={cn(
+                        'grid grid-cols-[40px_1fr_80px_80px_70px] gap-2 items-center px-3 py-1.5 rounded hover:bg-bg-card transition-colors',
+                        swap.isWhale && 'border border-neon-yellow/20 bg-neon-yellow/[0.02]'
+                      )}
+                    >
+                      <div className={cn(
+                        'w-6 h-6 rounded flex items-center justify-center',
+                        swap.type === 'buy'
+                          ? 'bg-neon-green/10 text-neon-green'
+                          : 'bg-neon-red/10 text-neon-red'
+                      )}>
+                        {swap.type === 'buy' ? <ArrowDownRight className="w-3 h-3" /> : <ArrowUpRight className="w-3 h-3" />}
+                      </div>
+                      <span className="text-[10px] font-mono text-text-secondary truncate">
+                        {shortenAddress(swap.wallet, 4)}
+                        {swap.isWhale && <span className="text-neon-yellow ml-1">🐋</span>}
+                      </span>
+                      <span className="text-[10px] font-mono text-text-primary text-right">
+                        {swap.tokenAmount >= 1000000 ? `${(swap.tokenAmount / 1000000).toFixed(1)}M` :
+                         swap.tokenAmount >= 1000 ? `${(swap.tokenAmount / 1000).toFixed(1)}k` :
+                         swap.tokenAmount.toFixed(0)}
+                      </span>
+                      <span className={cn('text-[10px] font-mono text-right font-semibold',
+                        swap.type === 'buy' ? 'text-neon-green' : 'text-neon-red'
+                      )}>
+                        ${swap.usdValue >= 1000 ? `${(swap.usdValue / 1000).toFixed(1)}k` : swap.usdValue.toFixed(0)}
+                      </span>
+                      <span className="text-[9px] font-mono text-text-dim text-right">
+                        {new Date(swap.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Top wallets */}
+              {orderbookData.wallets?.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[9px] text-text-dim uppercase tracking-widest font-mono font-semibold block">
+                    Top Active Wallets
+                  </span>
+                  <div className="grid grid-cols-[1fr_50px_50px_70px_70px] gap-2 px-3 py-1 text-[8px] text-text-dim uppercase tracking-widest font-mono border-b border-border">
+                    <span>Wallet</span>
+                    <span className="text-right">Buys</span>
+                    <span className="text-right">Sells</span>
+                    <span className="text-right">Bought</span>
+                    <span className="text-right">Sold</span>
+                  </div>
+                  {orderbookData.wallets.slice(0, 10).map((w: any) => (
+                    <div key={w.wallet} className="grid grid-cols-[1fr_50px_50px_70px_70px] gap-2 items-center px-3 py-1.5 rounded hover:bg-bg-card transition-colors">
+                      <span className="text-[10px] font-mono text-text-secondary truncate">{shortenAddress(w.wallet, 4)}</span>
+                      <span className="text-[10px] font-mono text-neon-green text-right">{w.buys}</span>
+                      <span className="text-[10px] font-mono text-neon-red text-right">{w.sells}</span>
+                      <span className="text-[10px] font-mono text-text-primary text-right">${w.totalBoughtUsd >= 1000 ? `${(w.totalBoughtUsd / 1000).toFixed(1)}k` : w.totalBoughtUsd.toFixed(0)}</span>
+                      <span className="text-[10px] font-mono text-text-primary text-right">${w.totalSoldUsd >= 1000 ? `${(w.totalSoldUsd / 1000).toFixed(1)}k` : w.totalSoldUsd.toFixed(0)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-text-dim font-mono text-sm text-center py-6">
+              <Eye className="w-8 h-8 mx-auto mb-2 opacity-30" />
+              No swap data available
+            </div>
+          )}
+        </Card>
 
         {/* ── 4. HOLDER ANALYSIS ── */}
         <div className="space-y-3">

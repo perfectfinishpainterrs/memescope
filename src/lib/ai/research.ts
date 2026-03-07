@@ -40,6 +40,9 @@ interface TokenContext {
   topTweets?: any[];
   // Meteora pool data
   meteoraPools?: any[];
+  // Orderbook sniffer
+  orderbookAlerts?: any[];
+  orderbookSummary?: any;
 }
 
 function buildDataBlock(ctx: TokenContext): string {
@@ -98,6 +101,22 @@ function buildDataBlock(ctx: TokenContext): string {
     ctx.meteoraPools.slice(0, 3).forEach((p: any) => {
       lines.push(`  ${p.name}: $${(p.liquidity || 0).toLocaleString()} TVL | $${(p.volume24h || 0).toLocaleString()} vol | ${(p.apr || 0).toFixed(1)}% APR | ${p.binStep} bin step | ${p.baseFee}% fee`);
     });
+  }
+
+  // Orderbook Sniffer
+  if (ctx.orderbookSummary) {
+    lines.push("");
+    lines.push("── ORDER BOOK SNIFFER ──");
+    const ob = ctx.orderbookSummary;
+    lines.push(`Buy Pressure: ${ob.buyPressure}% | ${ob.buys} buys ($${ob.buyVolume?.toLocaleString()}) | ${ob.sells} sells ($${ob.sellVolume?.toLocaleString()})`);
+    lines.push(`Unique Wallets: ${ob.uniqueWallets} | Avg Trade: $${ob.avgTradeSize?.toFixed(0)} | Largest: $${ob.largestTrade?.toFixed(0)}`);
+    lines.push(`Time Span: ${ob.timeSpanMinutes?.toFixed(0)} minutes`);
+    if (ctx.orderbookAlerts?.length) {
+      lines.push(`ALERTS (${ctx.orderbookAlerts.length}):`);
+      ctx.orderbookAlerts.slice(0, 10).forEach((a: any) => {
+        lines.push(`  [${a.severity.toUpperCase()}] ${a.message}`);
+      });
+    }
   }
 
   // Sentiment
