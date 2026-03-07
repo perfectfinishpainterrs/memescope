@@ -191,6 +191,8 @@ export interface ResearchBriefing {
   query: string;
   timestamp: string;
   overview: string;
+  chartAnalysis?: string;
+  holderAnalysis?: string;
   sentiment: string;
   keyVoices: string;
   riskAssessment: string;

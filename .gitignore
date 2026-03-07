@@ -37,3 +37,6 @@ coverage/
 
 # supabase
 supabase/.temp/
+
+# token memory data
+data/

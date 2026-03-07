@@ -98,22 +98,73 @@ export function TokenView({ address }: TokenViewProps) {
     setTimeout(() => setCopied(false), 2000)
   }, [address])
 
+  // Build context payload with all available data
+  const buildContext = useCallback(() => ({
+    address,
+    chain,
+    ticker: tokenData?.ticker,
+    name: tokenData?.name,
+    price: tokenData?.price,
+    priceChange24h: tokenData?.priceChange24h,
+    volume24h: tokenData?.volume24h,
+    liquidity: tokenData?.liquidity,
+    marketCap: tokenData?.marketCap,
+    totalHolders: holderData?.totalHolders,
+    topHolderPct: holderData?.topHolderPct,
+    concentration: holderData?.concentration,
+    whaleAction: holderData?.whaleAction,
+    holderChange24h: holderData?.holderChange24h,
+    uniqueBuyers24h: holderData?.uniqueBuyers24h,
+    uniqueSellers24h: holderData?.uniqueSellers24h,
+    safetyScore: safetyData?.score,
+    safetyGrade: safetyData?.grade,
+    safetyFlags: safetyData?.flags,
+    safetyPositives: safetyData?.positives,
+    sentimentBullish: sentimentData?.bullish,
+    sentimentBearish: sentimentData?.bearish,
+    sentimentOverall: sentimentData?.overall,
+    totalTweets: sentimentData?.totalTweets,
+    topTweets: tweets?.slice(0, 5),
+  }), [address, chain, tokenData, holderData, safetyData, sentimentData, tweets])
+
+  // Save to token memory whenever data changes
+  useEffect(() => {
+    if (tokenLoading || !tokenData) return
+    const ctx = buildContext()
+    fetch('/api/token/memory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ctx),
+    }).catch(() => {})
+  }, [tokenData, holderData, safetyData, sentimentData, buildContext, tokenLoading])
+
+  // Auto-trigger research once all data is loaded
+  useEffect(() => {
+    if (research || researchLoading) return
+    if (tokenLoading || safetyLoading || sentimentLoading || holderLoading) return
+    if (!tokenData) return
+    generateResearch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenLoading, safetyLoading, sentimentLoading, holderLoading])
+
   const generateResearch = async () => {
     setResearchLoading(true)
     try {
+      const ctx = buildContext()
       const res = await fetch('/api/token/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          address,
-          chain,
-          ticker: tokenData?.ticker,
-          name: tokenData?.name,
-        }),
+        body: JSON.stringify(ctx),
       })
       if (res.ok) {
         const data = await res.json()
         setResearch(data)
+        // Save research to memory too
+        fetch('/api/token/memory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address, chain, research: data }),
+        }).catch(() => {})
       }
     } catch {
       // silently fail
@@ -848,14 +899,13 @@ export function TokenView({ address }: TokenViewProps) {
                 AI Research
               </span>
             </div>
-            {!research && (
+            {research && !researchLoading && (
               <Button
                 size="sm"
-                variant="outline"
-                loading={researchLoading}
+                variant="ghost"
                 onClick={generateResearch}
               >
-                Generate Research Briefing
+                Regenerate
               </Button>
             )}
           </div>
@@ -867,16 +917,18 @@ export function TokenView({ address }: TokenViewProps) {
               <Skeleton className="h-4 w-5/6" />
               <Skeleton className="h-4 w-2/3" />
               <Skeleton className="h-4 w-4/5" />
+              <p className="text-text-dim font-mono text-[10px] text-center mt-2">Analyzing token data with AI...</p>
             </div>
           ) : research ? (
             <div className="space-y-4">
               {[
                 { title: 'Overview', content: research.overview },
+                { title: 'Chart Analysis', content: research.chartAnalysis },
+                { title: 'Holder Analysis', content: research.holderAnalysis },
                 { title: 'Sentiment', content: research.sentiment },
-                { title: 'Key Voices', content: research.keyVoices },
                 { title: 'Risk Assessment', content: research.riskAssessment },
                 { title: 'Verdict', content: research.verdict },
-              ].map((section) => (
+              ].filter(s => s.content).map((section) => (
                 <div key={section.title}>
                   <span className="text-[9px] text-text-dim uppercase tracking-widest font-mono block mb-1">
                     {section.title}
@@ -903,7 +955,7 @@ export function TokenView({ address }: TokenViewProps) {
             </div>
           ) : (
             <div className="text-text-dim font-mono text-sm text-center py-6">
-              Click the button above to generate an AI research briefing
+              Waiting for token data to load...
             </div>
           )}
         </Card>

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Outfit, JetBrains_Mono } from "next/font/google";
 import { ClientOnly } from "@/components/layout/client-only";
 import { PriceTicker } from "@/components/layout/price-ticker";
+import { WalletProvider } from "@/components/layout/wallet-provider";
 import "@/styles/globals.css";
 
 const outfit = Outfit({ subsets: ["latin"], variable: "--font-sans" });
@@ -51,8 +52,10 @@ export default function RootLayout({
         className={`${outfit.variable} ${jetbrainsMono.variable} font-sans scanlines min-h-screen bg-bg-deep text-text-primary antialiased pb-10`}
       >
         <ClientOnly>
-          {children}
-          <PriceTicker />
+          <WalletProvider>
+            {children}
+            <PriceTicker />
+          </WalletProvider>
         </ClientOnly>
       </body>
     </html>

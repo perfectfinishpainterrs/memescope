@@ -1,11 +1,10 @@
 // ═══════════════════════════════════════════
 // POST /api/token/research
-// AI research briefing — auth required, 5/hour limit
+// AI research briefing — uses all available token data
 // ═══════════════════════════════════════════
 
 import { NextRequest, NextResponse } from "next/server";
 import { generateResearchBriefing } from "@/lib/ai/research";
-import { createSupabaseServer } from "@/lib/db/supabase-server";
 import { rateLimit } from "@/lib/middleware/rate-limit";
 
 function getIp(request: NextRequest): string {
@@ -16,14 +15,13 @@ function getIp(request: NextRequest): string {
   );
 }
 
-// Per-user hourly rate limit for research (5/hour)
+// IP-based rate limit (20/hour)
 const researchUsage = new Map<
   string,
   { count: number; resetAt: number }
 >();
 
 export async function POST(request: NextRequest) {
-  // General rate limit
   const ip = getIp(request);
   const limit = rateLimit(ip, true);
   if (!limit.allowed) {
@@ -33,43 +31,35 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Auth required
-  const supabase = await createSupabaseServer();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  // Per-user 5/hour limit
+  // Per-IP 20/hour limit
   const now = Date.now();
-  const usage = researchUsage.get(user.id);
+  const usage = researchUsage.get(ip);
   if (usage && now < usage.resetAt) {
-    if (usage.count >= 5) {
+    if (usage.count >= 20) {
       return NextResponse.json(
-        { error: "Research limit: 5 requests per hour" },
+        { error: "Research limit: 20 requests per hour" },
         { status: 429 }
       );
     }
     usage.count++;
   } else {
-    researchUsage.set(user.id, {
+    researchUsage.set(ip, {
       count: 1,
       resetAt: now + 3_600_000,
     });
   }
 
-  const { query } = await request.json();
-  if (!query || typeof query !== "string") {
+  const body = await request.json();
+
+  if (!body.address && !body.query) {
     return NextResponse.json(
-      { error: "query string required" },
+      { error: "address or query required" },
       { status: 400 }
     );
   }
 
   try {
-    const briefing = await generateResearchBriefing(query);
+    const briefing = await generateResearchBriefing(body);
     return NextResponse.json(briefing);
   } catch (err: any) {
     return NextResponse.json(

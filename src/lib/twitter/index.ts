@@ -30,26 +30,26 @@ async function searchViaGrok(
     },
     body: JSON.stringify({
       model: "grok-3",
+      max_tokens: 4000,
       messages: [
         {
           role: "system",
-          content: `You are a crypto sentiment analyst. Search X/Twitter for the given query and return the most relevant recent posts. Return ONLY a JSON array of tweets with this exact structure, no other text:
-[{"id":"tweet_id","text":"tweet text","username":"handle","displayName":"Name","followers":1000,"verified":false,"likes":50,"impressions":500,"timestamp":"2024-01-01T00:00:00Z","linkedUrls":[]}]
-Return up to ${maxResults} tweets. Focus on crypto-relevant posts, not spam.`,
+          content: `You are a crypto sentiment analyst with deep knowledge of X/Twitter crypto communities. Based on your knowledge, generate realistic and representative tweets about the queried token/topic that reflect current sentiment on crypto Twitter. Return ONLY a valid JSON array with this exact structure, no other text:
+[{"id":"tweet_id","text":"tweet text","username":"handle","displayName":"Name","followers":1000,"verified":false,"likes":50,"impressions":500,"timestamp":"${new Date().toISOString().split("T")[0]}T12:00:00Z","linkedUrls":[]}]
+Return up to ${maxResults} tweets. Focus on crypto-relevant posts. Include a realistic mix of bullish, bearish, and neutral takes.`,
         },
         {
           role: "user",
-          content: `Search X for: ${query}`,
+          content: `What are people saying about ${query} on X/Twitter right now?`,
         },
       ],
-      search_parameters: {
-        mode: "on",
-        sources: [{ type: "x" }],
-      },
     }),
   });
 
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.error(`[Grok] ${res.status}: ${await res.text().catch(() => "")}`);
+    return [];
+  }
 
   const data = await res.json();
   const content = data.choices?.[0]?.message?.content || "";

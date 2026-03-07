@@ -1,16 +1,19 @@
 'use client'
 
 import { APP_CONFIG } from '@/config'
-import { cn } from '@/lib/utils'
+import { cn, shortenAddress } from '@/lib/utils'
 import { createSupabaseBrowser } from '@/lib/db/supabase-browser'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { Menu, X } from 'lucide-react'
+import { Menu, X, Wallet } from 'lucide-react'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { useWalletModal } from '@solana/wallet-adapter-react-ui'
 import type { User } from '@supabase/supabase-js'
 
 const navLinks = [
   { href: '/scan', label: 'Scan' },
+  { href: '/portfolio', label: 'Portfolio' },
   { href: '/dashboard', label: 'Dashboard' },
   { href: '/alerts', label: 'Alerts' },
 ]
@@ -19,6 +22,8 @@ export function Header() {
   const pathname = usePathname()
   const [user, setUser] = useState<User | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const { publicKey, disconnect, connected } = useWallet()
+  const { setVisible } = useWalletModal()
 
   useEffect(() => {
     const supabase = createSupabaseBrowser()
@@ -83,27 +88,31 @@ export function Header() {
             <span className="text-glow-green">LIVE</span>
           </div>
 
-          {/* Auth (desktop) */}
+          {/* Wallet Connect (desktop) */}
           <div className="hidden md:flex items-center gap-3">
-            {user ? (
-              <>
-                <span className="text-xs font-mono text-text-secondary truncate max-w-[140px]">
-                  {user.email}
-                </span>
+            {connected && publicKey ? (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 px-2.5 py-1 border border-neon-green/30 bg-neon-green/5 rounded">
+                  <Wallet className="w-3 h-3 text-neon-green" />
+                  <span className="text-xs font-mono text-neon-green">
+                    {shortenAddress(publicKey.toBase58(), 4)}
+                  </span>
+                </div>
                 <button
-                  onClick={handleLogout}
-                  className="text-xs font-mono text-text-dim hover:text-neon-red transition-colors"
+                  onClick={() => disconnect()}
+                  className="text-[10px] font-mono text-text-dim hover:text-neon-red transition-colors"
                 >
-                  Logout
+                  Disconnect
                 </button>
-              </>
+              </div>
             ) : (
-              <Link
-                href="/login"
-                className="text-xs font-mono text-text-secondary hover:text-neon-green transition-colors"
+              <button
+                onClick={() => setVisible(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono text-text-secondary border border-[#1a2f55] hover:text-neon-green hover:border-neon-green/30 hover:bg-neon-green/5 transition-all rounded"
               >
-                Login
-              </Link>
+                <Wallet className="w-3.5 h-3.5" />
+                Connect Wallet
+              </button>
             )}
           </div>
 
@@ -137,26 +146,29 @@ export function Header() {
               ))}
             </nav>
             <div className="mt-3 pt-3 border-t border-[#121e36]">
-              {user ? (
+              {connected && publicKey ? (
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-text-secondary truncate">
-                    {user.email}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <Wallet className="w-3 h-3 text-neon-green" />
+                    <span className="text-xs font-mono text-neon-green">
+                      {shortenAddress(publicKey.toBase58(), 4)}
+                    </span>
+                  </div>
                   <button
-                    onClick={handleLogout}
+                    onClick={() => { disconnect(); setMenuOpen(false) }}
                     className="text-xs font-mono text-text-dim hover:text-neon-red transition-colors"
                   >
-                    Logout
+                    Disconnect
                   </button>
                 </div>
               ) : (
-                <Link
-                  href="/login"
-                  onClick={() => setMenuOpen(false)}
-                  className="text-sm font-mono text-text-secondary hover:text-neon-green transition-colors"
+                <button
+                  onClick={() => { setVisible(true); setMenuOpen(false) }}
+                  className="flex items-center gap-1.5 text-sm font-mono text-text-secondary hover:text-neon-green transition-colors"
                 >
-                  Login
-                </Link>
+                  <Wallet className="w-3.5 h-3.5" />
+                  Connect Wallet
+                </button>
               )}
             </div>
           </div>

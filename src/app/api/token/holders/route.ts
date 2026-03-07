@@ -13,6 +13,42 @@ import {
 } from "@/lib/blockchain/moralis";
 import type { HolderData, HolderBucket, HolderPoint, HolderFlowPoint, Chain } from "@/types";
 
+const MORALIS_KEY = process.env.MORALIS_API_KEY || "";
+
+/**
+ * Count total holders by paginating Moralis top-holders.
+ * First page returns 100 + cursor; we follow cursors up to 10 pages (1000 holders).
+ */
+async function countMoralisHolders(address: string): Promise<number> {
+  if (!MORALIS_KEY) return 0;
+  try {
+    let total = 0;
+    let cursor: string | null = null;
+    const maxPages = 10;
+
+    for (let page = 0; page < maxPages; page++) {
+      const queryStr: string = cursor ? `?cursor=${cursor}` : "";
+      const resp: Response = await fetch(
+        `https://solana-gateway.moralis.io/token/mainnet/${address}/top-holders${queryStr}`,
+        {
+          headers: { "X-API-Key": MORALIS_KEY, accept: "application/json" },
+          next: { revalidate: 120 },
+        }
+      );
+      if (!resp.ok) break;
+      const json: { result?: any[]; cursor?: string; pageSize?: number } = await resp.json();
+      const results = json.result || [];
+      total += results.length;
+      cursor = json.cursor || null;
+      if (!cursor || results.length < (json.pageSize || 100)) break;
+    }
+
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
 const EVM_CHAINS: Chain[] = ["ETH", "BASE", "BSC"];
 
 interface HolderEntry {
@@ -193,9 +229,12 @@ function buildHolderData(
   holderHistory: HolderPoint[],
   uniqueBuyers24h: number,
   uniqueSellers24h: number,
-  holderChange24h: number
+  holderChange24h: number,
+  realTotalHolders?: number
 ): HolderData {
-  const totalHolders = topHolders.length;
+  const totalHolders = realTotalHolders && realTotalHolders > topHolders.length
+    ? realTotalHolders
+    : topHolders.length;
   const topHolderPct = topHolders.length > 0 ? topHolders[0].percentage : 0;
 
   const concentration = topHolders
@@ -261,7 +300,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Fetch holders + swaps in parallel
+    // Fetch holders + swaps in parallel (first page only for speed)
     const [holdersResult, swapsResult] = await Promise.allSettled([
       EVM_CHAINS.includes(chain)
         ? getEvmHolders(address, chain)
@@ -285,8 +324,15 @@ export async function GET(request: NextRequest) {
         ? rawSwaps
         : [];
 
+    // Get real holder count via pagination (SOL only, non-blocking)
+    let realHolderCount = data.topHolders.length;
+    if (!EVM_CHAINS.includes(chain) && data.topHolders.length >= 100) {
+      const counted = await countMoralisHolders(address);
+      if (counted > realHolderCount) realHolderCount = counted;
+    }
+
     const { holderFlow, holderHistory, uniqueBuyers24h, uniqueSellers24h, holderChange24h } =
-      buildFlowFromSwaps(swapList, data.topHolders.length);
+      buildFlowFromSwaps(swapList, realHolderCount);
 
     const holderData = buildHolderData(
       data.topHolders,
@@ -294,7 +340,8 @@ export async function GET(request: NextRequest) {
       holderHistory,
       uniqueBuyers24h,
       uniqueSellers24h,
-      holderChange24h
+      holderChange24h,
+      realHolderCount
     );
 
     return NextResponse.json(holderData, {
