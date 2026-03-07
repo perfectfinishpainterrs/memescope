@@ -125,6 +125,7 @@ export function TokenView({ address }: TokenViewProps) {
     sentimentOverall: sentimentData?.overall,
     totalTweets: sentimentData?.totalTweets,
     topTweets: tweets?.slice(0, 5),
+    meteoraPools: tokenData?.meteoraPools,
   }), [address, chain, tokenData, holderData, safetyData, sentimentData, tweets])
 
   // Save to token memory whenever data changes
@@ -428,6 +429,64 @@ export function TokenView({ address }: TokenViewProps) {
             </Card>
           ))}
         </div>
+
+        {/* ── 3b. METEORA POOLS ── */}
+        {tokenData?.meteoraPools && tokenData.meteoraPools.length > 0 && (
+          <Card>
+            <div className="flex items-center gap-2 mb-3">
+              <Droplets className="w-3.5 h-3.5 text-neon-cyan" />
+              <span className="text-[10px] text-text-dim uppercase tracking-widest font-mono font-semibold">
+                Meteora DLMM Pools
+              </span>
+              <span className="text-[9px] text-text-dim font-mono ml-auto">
+                {tokenData.meteoraPools.length} pool{tokenData.meteoraPools.length > 1 ? 's' : ''}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {/* Summary row */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                {[
+                  { label: 'Total TVL', value: `$${tokenData.meteoraPools.reduce((s, p) => s + p.liquidity, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}` },
+                  { label: '24h Volume', value: `$${tokenData.meteoraPools.reduce((s, p) => s + p.volume24h, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}` },
+                  { label: '24h Fees', value: `$${tokenData.meteoraPools.reduce((s, p) => s + p.fees24h, 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}` },
+                  { label: 'Best APR', value: `${Math.max(...tokenData.meteoraPools.map(p => p.apr)).toFixed(1)}%` },
+                ].map((s) => (
+                  <div key={s.label} className="bg-bg-panel border border-border rounded-lg px-3 py-2">
+                    <span className="text-[9px] text-text-dim font-mono uppercase tracking-widest block">{s.label}</span>
+                    <span className="text-sm font-mono text-neon-cyan font-semibold">{s.value}</span>
+                  </div>
+                ))}
+              </div>
+              {/* Individual pools */}
+              <div className="space-y-1">
+                <div className="grid grid-cols-[1fr_80px_80px_80px_60px_60px] gap-2 px-3 py-1 text-[8px] text-text-dim uppercase tracking-widest font-mono border-b border-border">
+                  <span>Pool</span>
+                  <span className="text-right">TVL</span>
+                  <span className="text-right">24h Vol</span>
+                  <span className="text-right">24h Fees</span>
+                  <span className="text-right">APR</span>
+                  <span className="text-right">Bin</span>
+                </div>
+                {tokenData.meteoraPools.slice(0, 5).map((pool) => (
+                  <div
+                    key={pool.address}
+                    className="grid grid-cols-[1fr_80px_80px_80px_60px_60px] gap-2 items-center px-3 py-2 rounded-lg hover:bg-bg-card border border-transparent hover:border-neon-cyan/10 transition-all"
+                  >
+                    <div className="min-w-0">
+                      <span className="text-xs font-mono font-bold text-text-primary block truncate">{pool.name}</span>
+                      <span className="text-[9px] font-mono text-text-dim">{pool.baseFee}% fee</span>
+                    </div>
+                    <span className="text-xs font-mono text-text-primary text-right">${pool.liquidity >= 1000 ? `${(pool.liquidity / 1000).toFixed(1)}k` : pool.liquidity.toFixed(0)}</span>
+                    <span className="text-xs font-mono text-text-secondary text-right">${pool.volume24h >= 1000 ? `${(pool.volume24h / 1000).toFixed(1)}k` : pool.volume24h.toFixed(0)}</span>
+                    <span className="text-xs font-mono text-neon-green text-right">${pool.fees24h >= 1000 ? `${(pool.fees24h / 1000).toFixed(1)}k` : pool.fees24h.toFixed(0)}</span>
+                    <span className={cn('text-xs font-mono text-right font-bold', pool.apr > 0 ? 'text-neon-green' : 'text-text-dim')}>{pool.apr.toFixed(1)}%</span>
+                    <span className="text-xs font-mono text-text-dim text-right">{pool.binStep}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+        )}
 
         {/* ── 4. HOLDER ANALYSIS ── */}
         <div className="space-y-3">

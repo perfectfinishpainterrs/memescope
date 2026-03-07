@@ -63,6 +63,41 @@ export interface TokenData {
   marketCap: number;
   priceHistory: PricePoint[];
   volumeHistory: VolumePoint[];
+  meteoraPools?: MeteoraPool[];
+}
+
+// ── Meteora Pool Data ───────────────────
+
+export interface MeteoraPool {
+  address: string;
+  name: string;
+  liquidity: number;
+  volume24h: number;
+  fees24h: number;
+  apr: number;
+  binStep: number;
+  baseFee: string;
+  reserveX: number;
+  reserveY: number;
+  mintX: string;
+  mintY: string;
+  currentPrice: number;
+  cumulativeVolume: number;
+  cumulativeFees: number;
+  feesByTime: {
+    min30: number;
+    hour1: number;
+    hour4: number;
+    hour12: number;
+    hour24: number;
+  };
+  volumeByTime: {
+    min30: number;
+    hour1: number;
+    hour4: number;
+    hour12: number;
+    hour24: number;
+  };
 }
 
 export interface PricePoint {

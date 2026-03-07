@@ -38,6 +38,8 @@ interface TokenContext {
   sentimentOverall?: number;
   totalTweets?: number;
   topTweets?: any[];
+  // Meteora pool data
+  meteoraPools?: any[];
 }
 
 function buildDataBlock(ctx: TokenContext): string {
@@ -80,6 +82,22 @@ function buildDataBlock(ctx: TokenContext): string {
     lines.push(`Score: ${ctx.safetyScore}/100 (${ctx.safetyGrade || "?"})`);
     if (ctx.safetyPositives?.length) lines.push(`Positives: ${ctx.safetyPositives.join(", ")}`);
     if (ctx.safetyFlags?.length) lines.push(`Red Flags: ${ctx.safetyFlags.join(", ")}`);
+  }
+
+  // Meteora Pools
+  if (ctx.meteoraPools?.length) {
+    lines.push("");
+    lines.push("── METEORA DLMM POOLS ──");
+    lines.push(`Active Pools: ${ctx.meteoraPools.length}`);
+    const totalLiq = ctx.meteoraPools.reduce((s: number, p: any) => s + (p.liquidity || 0), 0);
+    const totalVol = ctx.meteoraPools.reduce((s: number, p: any) => s + (p.volume24h || 0), 0);
+    const totalFees = ctx.meteoraPools.reduce((s: number, p: any) => s + (p.fees24h || 0), 0);
+    lines.push(`Total Meteora Liquidity: $${totalLiq.toLocaleString()}`);
+    lines.push(`Total 24h Volume: $${totalVol.toLocaleString()}`);
+    lines.push(`Total 24h Fees: $${totalFees.toLocaleString()}`);
+    ctx.meteoraPools.slice(0, 3).forEach((p: any) => {
+      lines.push(`  ${p.name}: $${(p.liquidity || 0).toLocaleString()} TVL | $${(p.volume24h || 0).toLocaleString()} vol | ${(p.apr || 0).toFixed(1)}% APR | ${p.binStep} bin step | ${p.baseFee}% fee`);
+    });
   }
 
   // Sentiment

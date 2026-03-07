@@ -54,6 +54,7 @@ export const API_URLS = {
   GROK: "https://api.x.ai/v1",
   MORALIS_SOL: "https://solana-gateway.moralis.io",
   MORALIS_EVM: "https://deep-index.moralis.io/api/v2.2",
+  METEORA_DLMM: "https://dlmm-api.meteora.ag",
 } as const;
 
 // Known KOLs to track

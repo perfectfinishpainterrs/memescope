@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════
 
 import { API_URLS } from "@/config";
-import type { Chain, TokenData, PricePoint, VolumePoint } from "@/types";
+import type { Chain, TokenData, PricePoint, VolumePoint, MeteoraPool } from "@/types";
 import { getMoralisTokenPrice, getMoralisTokenStats } from "@/lib/blockchain/moralis";
 import { getEvmTokenPrice } from "@/lib/blockchain/evm";
 
@@ -163,6 +163,66 @@ async function getMoralisData(tokenAddress: string, chain: string) {
   }
 }
 
+// ── Meteora DLMM Pools (Solana only) ────
+
+export async function getMeteoraPoolData(
+  tokenAddress: string
+): Promise<MeteoraPool[]> {
+  try {
+    const res = await fetch(
+      `${API_URLS.METEORA_DLMM}/pair/all_by_groups?page=0&limit=5&sort_key=tvl&order_by=desc&search_term=${tokenAddress}`,
+      { next: { revalidate: 60 } }
+    );
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    const groups = data?.groups || [];
+
+    const pools: MeteoraPool[] = [];
+    for (const group of groups) {
+      for (const pair of group.pairs || []) {
+        pools.push({
+          address: pair.address,
+          name: pair.name || "",
+          liquidity: parseFloat(pair.liquidity || "0"),
+          volume24h: pair.trade_volume_24h || 0,
+          fees24h: pair.fees_24h || 0,
+          apr: pair.apr || 0,
+          binStep: pair.bin_step || 0,
+          baseFee: pair.base_fee_percentage || "0",
+          reserveX: pair.reserve_x_amount || 0,
+          reserveY: pair.reserve_y_amount || 0,
+          mintX: pair.mint_x || "",
+          mintY: pair.mint_y || "",
+          currentPrice: pair.current_price || 0,
+          cumulativeVolume: parseFloat(pair.cumulative_trade_volume || "0"),
+          cumulativeFees: parseFloat(pair.cumulative_fee_volume || "0"),
+          feesByTime: {
+            min30: pair.fees?.min_30 || 0,
+            hour1: pair.fees?.hour_1 || 0,
+            hour4: pair.fees?.hour_4 || 0,
+            hour12: pair.fees?.hour_12 || 0,
+            hour24: pair.fees?.hour_24 || 0,
+          },
+          volumeByTime: {
+            min30: pair.volume?.min_30 || 0,
+            hour1: pair.volume?.hour_1 || 0,
+            hour4: pair.volume?.hour_4 || 0,
+            hour12: pair.volume?.hour_12 || 0,
+            hour24: pair.volume?.hour_24 || 0,
+          },
+        });
+      }
+    }
+
+    // Sort by liquidity descending
+    pools.sort((a, b) => b.liquidity - a.liquidity);
+    return pools;
+  } catch {
+    return [];
+  }
+}
+
 // ── Aggregator ──────────────────────────
 
 /**
@@ -174,14 +234,17 @@ export async function getTokenData(
   tokenAddress: string,
   chain = "SOL"
 ): Promise<Partial<TokenData>> {
-  // Step 1: Get current data from DEXScreener + Moralis
-  const [dexResult, moralisResult] = await Promise.allSettled([
+  // Step 1: Get current data from DEXScreener + Moralis + Meteora (SOL only)
+  const isSolana = chain === "SOL";
+  const [dexResult, moralisResult, meteoraResult] = await Promise.allSettled([
     getDexScreenerData(tokenAddress),
     getMoralisData(tokenAddress, chain),
+    isSolana ? getMeteoraPoolData(tokenAddress) : Promise.resolve([]),
   ]);
 
   const dex = dexResult.status === "fulfilled" ? dexResult.value : null;
   const moralis = moralisResult.status === "fulfilled" ? moralisResult.value : null;
+  const meteoraPools = meteoraResult.status === "fulfilled" ? meteoraResult.value : [];
 
   // Step 2: Get chart data from GeckoTerminal OHLCV
   // Use DEXScreener pair address if available, otherwise find pool from GeckoTerminal
@@ -196,6 +259,9 @@ export async function getTokenData(
     volumeHistory = ohlcv.volumeHistory;
   }
 
+  // Use Meteora total liquidity as fallback/supplement
+  const meteoraTotalLiq = meteoraPools.reduce((s, p) => s + p.liquidity, 0);
+
   return {
     address: tokenAddress,
     name: dex?.name || undefined,
@@ -204,9 +270,10 @@ export async function getTokenData(
     priceChange24h: dex?.priceChange24h || 0,
     volume24h: dex?.volume24h || 0,
     txns24h: dex?.txns24h || 0,
-    liquidity: dex?.liquidity || 0,
+    liquidity: dex?.liquidity || meteoraTotalLiq || 0,
     marketCap: dex?.marketCap || 0,
     priceHistory,
     volumeHistory,
+    meteoraPools: meteoraPools.length > 0 ? meteoraPools : undefined,
   };
 }
