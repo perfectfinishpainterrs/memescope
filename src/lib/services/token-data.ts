@@ -1,18 +1,19 @@
 // ═══════════════════════════════════════════
 // Token Data Service
-// Aggregates price, volume, liquidity from
-// DEXScreener, Birdeye, and GeckoTerminal
+// Priority: DEXScreener (current) + GeckoTerminal (charts)
+// + Moralis (price enhancer when key available)
 // ═══════════════════════════════════════════
 
 import { API_URLS } from "@/config";
-import type { TokenData, PricePoint, VolumePoint } from "@/types";
+import type { Chain, TokenData, PricePoint, VolumePoint } from "@/types";
+import { getMoralisTokenPrice, getMoralisTokenStats } from "@/lib/blockchain/moralis";
+import { getEvmTokenPrice } from "@/lib/blockchain/evm";
+
+const EVM_CHAINS: Chain[] = ["ETH", "BASE", "BSC"];
+const MORALIS_KEY = process.env.MORALIS_API_KEY || "";
 
 // ── DEXScreener (free, no key needed) ───
 
-/**
- * Get token pair data from DEXScreener.
- * Returns: price, volume, liquidity, txns, price change.
- */
 export async function getDexScreenerData(tokenAddress: string) {
   const res = await fetch(
     `${API_URLS.DEXSCREENER}/dex/tokens/${tokenAddress}`,
@@ -43,78 +44,89 @@ export async function getDexScreenerData(tokenAddress: string) {
     dexId: bestPair.dexId,
     buys24h: bestPair.txns?.h24?.buys || 0,
     sells24h: bestPair.txns?.h24?.sells || 0,
+    name: bestPair.baseToken?.name || null,
+    ticker: bestPair.baseToken?.symbol || null,
+    chainId: bestPair.chainId || "solana",
   };
 }
 
-// ── Birdeye (Solana-specific) ───────────
+// ── GeckoTerminal OHLCV (free, primary for charts) ───
 
-const BIRDEYE_KEY = process.env.BIRDEYE_API_KEY || "";
+const NETWORK_MAP: Record<string, string> = {
+  SOL: "solana",
+  ETH: "eth",
+  BASE: "base",
+  BSC: "bsc",
+};
 
 /**
- * Get token overview from Birdeye.
- * Enhanced holder count and distribution data.
+ * Get pool address from GeckoTerminal for a token.
  */
-export async function getBirdeyeTokenOverview(tokenAddress: string) {
-  if (!BIRDEYE_KEY) return null;
-
-  const res = await fetch(
-    `${API_URLS.BIRDEYE}/defi/token_overview?address=${tokenAddress}`,
-    {
-      headers: {
-        "X-API-KEY": BIRDEYE_KEY,
-        "x-chain": "solana",
-      },
-      next: { revalidate: 60 },
-    }
-  );
-
-  if (!res.ok) return null;
-
-  const data = await res.json();
-  return data.data;
+async function getGeckoTerminalPool(tokenAddress: string, chain = "SOL") {
+  const network = NETWORK_MAP[chain] || "solana";
+  try {
+    const res = await fetch(
+      `${API_URLS.GECKO_TERMINAL}/networks/${network}/tokens/${tokenAddress}/pools?page=1`,
+      { next: { revalidate: 120 } }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const pools = data.data || [];
+    if (pools.length === 0) return null;
+    // Return the first (highest volume) pool address
+    return pools[0].attributes?.address || pools[0].id?.split("_")[1] || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Get price history from Birdeye.
+ * Get OHLCV data from GeckoTerminal.
+ * Returns price history + volume history.
+ * Timeframes: minute, hour, day
  */
-export async function getBirdeyePriceHistory(
-  tokenAddress: string,
-  timeframe: "1H" | "4H" | "1D" | "1W" = "1D"
-) {
-  if (!BIRDEYE_KEY) return [];
+export async function getGeckoTerminalOHLCV(
+  poolAddress: string,
+  chain = "SOL",
+  timeframe: "minute" | "hour" | "day" = "hour",
+  aggregate = 1,
+  limit = 48
+): Promise<{ priceHistory: PricePoint[]; volumeHistory: VolumePoint[] }> {
+  const network = NETWORK_MAP[chain] || "solana";
+  try {
+    const res = await fetch(
+      `${API_URLS.GECKO_TERMINAL}/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}&currency=usd`,
+      { next: { revalidate: 30 } }
+    );
+    if (!res.ok) return { priceHistory: [], volumeHistory: [] };
 
-  const timeMap = {
-    "1H": { type: "1m", time_from: Math.floor(Date.now() / 1000) - 3600 },
-    "4H": { type: "5m", time_from: Math.floor(Date.now() / 1000) - 14400 },
-    "1D": { type: "15m", time_from: Math.floor(Date.now() / 1000) - 86400 },
-    "1W": { type: "1H", time_from: Math.floor(Date.now() / 1000) - 604800 },
-  };
+    const data = await res.json();
+    const candles = data.data?.attributes?.ohlcv_list || [];
 
-  const params = timeMap[timeframe];
+    // OHLCV format: [timestamp, open, high, low, close, volume]
+    const priceHistory: PricePoint[] = candles
+      .map((c: number[]) => ({
+        timestamp: new Date(c[0] * 1000).toISOString(),
+        price: c[4], // close price
+      }))
+      .reverse(); // oldest first
 
-  const res = await fetch(
-    `${API_URLS.BIRDEYE}/defi/history_price?address=${tokenAddress}&address_type=token&type=${params.type}&time_from=${params.time_from}&time_to=${Math.floor(Date.now() / 1000)}`,
-    {
-      headers: {
-        "X-API-KEY": BIRDEYE_KEY,
-        "x-chain": "solana",
-      },
-    }
-  );
+    const volumeHistory: VolumePoint[] = candles
+      .map((c: number[]) => ({
+        timestamp: new Date(c[0] * 1000).toISOString(),
+        buyVolume: c[5] / 2, // approximate split
+        sellVolume: c[5] / 2,
+      }))
+      .reverse();
 
-  if (!res.ok) return [];
-
-  const data = await res.json();
-  return (data.data?.items || []).map((item: any) => ({
-    timestamp: new Date(item.unixTime * 1000).toISOString(),
-    price: item.value,
-  }));
+    return { priceHistory, volumeHistory };
+  } catch {
+    return { priceHistory: [], volumeHistory: [] };
+  }
 }
 
-// ── GeckoTerminal (free, backup) ────────
-
 /**
- * Get token data from GeckoTerminal as a backup source.
+ * Get token data from GeckoTerminal.
  */
 export async function getGeckoTerminalData(
   tokenAddress: string,
@@ -124,40 +136,77 @@ export async function getGeckoTerminalData(
     `${API_URLS.GECKO_TERMINAL}/networks/${network}/tokens/${tokenAddress}`,
     { next: { revalidate: 60 } }
   );
-
   if (!res.ok) return null;
-
   const data = await res.json();
   return data.data?.attributes;
+}
+
+// ── Moralis (when key available) ──────────
+
+async function getMoralisData(tokenAddress: string, chain: string) {
+  if (!MORALIS_KEY) return null;
+  try {
+    if (EVM_CHAINS.includes(chain as Chain)) {
+      const data = await getEvmTokenPrice(tokenAddress, chain as Chain);
+      return {
+        price: data?.usdPrice || 0,
+        exchangeName: data?.exchangeName || null,
+      };
+    }
+    const data = await getMoralisTokenPrice(tokenAddress, "mainnet");
+    return {
+      price: data?.usdPrice || 0,
+      exchangeName: data?.exchangeName || null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ── Aggregator ──────────────────────────
 
 /**
  * Get comprehensive token data from all available sources.
- * Falls back gracefully if a source is unavailable.
+ * Priority: DEXScreener (current data) + GeckoTerminal (charts)
+ * + Moralis (price enhancer when key set)
  */
 export async function getTokenData(
   tokenAddress: string,
   chain = "SOL"
 ): Promise<Partial<TokenData>> {
-  const [dexData, birdeyeData] = await Promise.allSettled([
+  // Step 1: Get current data from DEXScreener + Moralis
+  const [dexResult, moralisResult] = await Promise.allSettled([
     getDexScreenerData(tokenAddress),
-    chain === "SOL" ? getBirdeyeTokenOverview(tokenAddress) : null,
+    getMoralisData(tokenAddress, chain),
   ]);
 
-  const dex =
-    dexData.status === "fulfilled" ? dexData.value : null;
-  const birdeye =
-    birdeyeData.status === "fulfilled" ? birdeyeData.value : null;
+  const dex = dexResult.status === "fulfilled" ? dexResult.value : null;
+  const moralis = moralisResult.status === "fulfilled" ? moralisResult.value : null;
+
+  // Step 2: Get chart data from GeckoTerminal OHLCV
+  // Use DEXScreener pair address if available, otherwise find pool from GeckoTerminal
+  let priceHistory: PricePoint[] = [];
+  let volumeHistory: VolumePoint[] = [];
+
+  const poolAddress = dex?.pairAddress || (await getGeckoTerminalPool(tokenAddress, chain));
+
+  if (poolAddress) {
+    const ohlcv = await getGeckoTerminalOHLCV(poolAddress, chain, "hour", 1, 48);
+    priceHistory = ohlcv.priceHistory;
+    volumeHistory = ohlcv.volumeHistory;
+  }
 
   return {
     address: tokenAddress,
-    price: dex?.price || birdeye?.price || 0,
+    name: dex?.name || undefined,
+    ticker: dex?.ticker || undefined,
+    price: moralis?.price || dex?.price || 0,
     priceChange24h: dex?.priceChange24h || 0,
-    volume24h: dex?.volume24h || birdeye?.v24hUSD || 0,
+    volume24h: dex?.volume24h || 0,
     txns24h: dex?.txns24h || 0,
-    liquidity: dex?.liquidity || birdeye?.liquidity || 0,
-    marketCap: dex?.marketCap || birdeye?.mc || 0,
+    liquidity: dex?.liquidity || 0,
+    marketCap: dex?.marketCap || 0,
+    priceHistory,
+    volumeHistory,
   };
 }

@@ -1,28 +1,169 @@
-// Header component — top nav bar
-"use client";
+'use client'
 
-import { APP_CONFIG } from "@/config";
+import { APP_CONFIG } from '@/config'
+import { cn } from '@/lib/utils'
+import { createSupabaseBrowser } from '@/lib/db/supabase-browser'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import { Menu, X } from 'lucide-react'
+import type { User } from '@supabase/supabase-js'
+
+const navLinks = [
+  { href: '/scan', label: 'Scan' },
+  { href: '/dashboard', label: 'Dashboard' },
+  { href: '/alerts', label: 'Alerts' },
+]
 
 export function Header() {
+  const pathname = usePathname()
+  const [user, setUser] = useState<User | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    const supabase = createSupabaseBrowser()
+    supabase.auth.getUser().then(({ data }) => setUser(data.user))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const handleLogout = async () => {
+    const supabase = createSupabaseBrowser()
+    await supabase.auth.signOut()
+    setUser(null)
+  }
+
   return (
-    <header className="flex items-center justify-between px-7 py-3.5 border-b border-border bg-bg-panel/90 backdrop-blur-xl sticky top-0 z-50">
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-neon-green to-neon-blue flex items-center justify-center text-sm font-black text-bg-deep font-mono shadow-[0_0_24px_rgba(0,255,136,0.2)]">
-          ◎
+    <header className="relative sticky top-0 z-50">
+      <div className="flex items-center justify-between px-7 py-3.5 bg-[#030608]/95 backdrop-blur-xl border-b border-[#121e36]">
+        {/* Left: Logo + Nav */}
+        <div className="flex items-center gap-6">
+          <Link href="/" className="flex items-center gap-3 group">
+            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-neon-green via-neon-cyan to-neon-green flex items-center justify-center text-sm font-black text-[#030608] font-mono shadow-[0_0_20px_rgba(0,255,136,0.35),0_0_40px_rgba(0,255,136,0.1)] group-hover:shadow-[0_0_25px_rgba(0,255,136,0.5),0_0_50px_rgba(0,255,136,0.15)] transition-shadow duration-300">
+              ◎
+            </div>
+            <div>
+              <div className="font-mono font-bold text-lg bg-gradient-to-r from-neon-green to-neon-cyan bg-clip-text text-transparent drop-shadow-[0_0_10px_rgba(0,255,136,0.3)]">
+                {APP_CONFIG.name}
+              </div>
+              <div className="text-[10px] text-text-dim font-mono tracking-widest uppercase">
+                {APP_CONFIG.tagline}
+              </div>
+            </div>
+          </Link>
+
+          {/* Desktop nav */}
+          <nav className="hidden md:flex items-center gap-1">
+            {navLinks.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={cn(
+                  'px-3 py-1.5 text-sm font-mono transition-all duration-200',
+                  pathname === link.href
+                    ? 'text-neon-green border border-neon-green/30 bg-neon-green/5 shadow-[0_0_10px_rgba(0,255,136,0.1),inset_0_0_10px_rgba(0,255,136,0.03)]'
+                    : 'text-text-secondary border border-transparent hover:text-text-primary hover:border-[#1a2f55] hover:bg-[#0f1a30]'
+                )}
+              >
+                {link.label}
+              </Link>
+            ))}
+          </nav>
         </div>
-        <div>
-          <div className="font-mono font-bold text-lg bg-gradient-to-r from-neon-green to-neon-blue bg-clip-text text-transparent">
-            {APP_CONFIG.name}
+
+        {/* Right: LIVE + Auth + Mobile menu */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 text-[10px] font-mono text-neon-green uppercase tracking-widest">
+            <div className="relative">
+              <div className="w-2 h-2 rounded-full bg-neon-green shadow-[0_0_8px_#00ff88,0_0_16px_rgba(0,255,136,0.4)] animate-pulse-dot" />
+              <div className="absolute inset-0 w-2 h-2 rounded-full bg-neon-green/30 animate-ping" />
+            </div>
+            <span className="text-glow-green">LIVE</span>
           </div>
-          <div className="text-[10px] text-text-dim font-mono tracking-widest uppercase">
-            {APP_CONFIG.tagline}
+
+          {/* Auth (desktop) */}
+          <div className="hidden md:flex items-center gap-3">
+            {user ? (
+              <>
+                <span className="text-xs font-mono text-text-secondary truncate max-w-[140px]">
+                  {user.email}
+                </span>
+                <button
+                  onClick={handleLogout}
+                  className="text-xs font-mono text-text-dim hover:text-neon-red transition-colors"
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <Link
+                href="/login"
+                className="text-xs font-mono text-text-secondary hover:text-neon-green transition-colors"
+              >
+                Login
+              </Link>
+            )}
           </div>
+
+          {/* Mobile hamburger */}
+          <button
+            onClick={() => setMenuOpen(!menuOpen)}
+            className="md:hidden text-text-secondary hover:text-text-primary transition-colors"
+          >
+            {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
         </div>
+
+        {/* Mobile dropdown */}
+        {menuOpen && (
+          <div className="absolute top-full left-0 right-0 bg-[#030608]/98 backdrop-blur-xl border-b border-[#121e36] p-4 md:hidden animate-fade-in">
+            <nav className="flex flex-col gap-2">
+              {navLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setMenuOpen(false)}
+                  className={cn(
+                    'px-3 py-2 text-sm font-mono transition-all duration-200',
+                    pathname === link.href
+                      ? 'text-neon-green border border-neon-green/30 bg-neon-green/5 shadow-[0_0_10px_rgba(0,255,136,0.1)]'
+                      : 'text-text-secondary border border-transparent hover:text-text-primary hover:border-[#1a2f55] hover:bg-[#0f1a30]'
+                  )}
+                >
+                  {link.label}
+                </Link>
+              ))}
+            </nav>
+            <div className="mt-3 pt-3 border-t border-[#121e36]">
+              {user ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-text-secondary truncate">
+                    {user.email}
+                  </span>
+                  <button
+                    onClick={handleLogout}
+                    className="text-xs font-mono text-text-dim hover:text-neon-red transition-colors"
+                  >
+                    Logout
+                  </button>
+                </div>
+              ) : (
+                <Link
+                  href="/login"
+                  onClick={() => setMenuOpen(false)}
+                  className="text-sm font-mono text-text-secondary hover:text-neon-green transition-colors"
+                >
+                  Login
+                </Link>
+              )}
+            </div>
+          </div>
+        )}
       </div>
-      <div className="flex items-center gap-1.5 text-[10px] font-mono text-neon-green uppercase tracking-widest">
-        <div className="w-1.5 h-1.5 rounded-full bg-neon-green shadow-[0_0_8px_#00ff88] animate-pulse-dot" />
-        LIVE
-      </div>
+      {/* Neon line under header */}
+      <div className="h-px w-full bg-gradient-to-r from-transparent via-neon-green/40 to-transparent shadow-[0_1px_8px_rgba(0,255,136,0.15)]" />
     </header>
-  );
+  )
 }

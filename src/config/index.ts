@@ -47,12 +47,13 @@ export const REFRESH_INTERVALS = {
 
 // API endpoints
 export const API_URLS = {
-  HELIUS: "https://mainnet.helius-rpc.com",
   DEXSCREENER: "https://api.dexscreener.com/latest",
-  BIRDEYE: "https://public-api.birdeye.so",
   GOPLUS: "https://api.gopluslabs.io/api/v1",
   GECKO_TERMINAL: "https://api.geckoterminal.com/api/v2",
   X_API: "https://api.x.com/2",
+  GROK: "https://api.x.ai/v1",
+  MORALIS_SOL: "https://solana-gateway.moralis.io",
+  MORALIS_EVM: "https://deep-index.moralis.io/api/v2.2",
 } as const;
 
 // Known KOLs to track

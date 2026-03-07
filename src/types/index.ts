@@ -197,3 +197,88 @@ export interface ResearchBriefing {
   verdict: string;
   sources: string[];
 }
+
+// ── User / Auth ─────────────────────────────
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  display_name: string | null;
+  tier: "free" | "pro";
+  settings: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SavedWallet {
+  id: string;
+  user_id: string;
+  address: string;
+  chain: Chain;
+  label: string | null;
+  created_at: string;
+}
+
+export interface WatchlistItem {
+  id: string;
+  user_id: string;
+  token_address: string;
+  chain: Chain;
+  label: string | null;
+  created_at: string;
+}
+
+export interface Alert {
+  id: string;
+  user_id: string;
+  token_address: string;
+  chain: Chain;
+  alert_type:
+    | "price_above"
+    | "price_below"
+    | "safety_drop"
+    | "holder_drop"
+    | "whale_move";
+  threshold: Record<string, number>;
+  enabled: boolean;
+  last_triggered: string | null;
+  created_at: string;
+}
+
+export interface ScanHistoryEntry {
+  id: string;
+  user_id: string;
+  address: string;
+  chain: Chain;
+  scanned_at: string;
+}
+
+// ── Saved Tokens ──────────────────────────
+
+export interface SavedToken {
+  id: string;
+  user_id: string;
+  token_address: string;
+  chain: Chain;
+  label: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+// ── Community / Mentions ──────────────────
+
+export interface TokenMention {
+  source: 'twitter' | 'telegram' | 'reddit';
+  text: string;
+  author: string;
+  timestamp: string;
+  sentiment: 'bullish' | 'bearish' | 'neutral';
+  url?: string;
+}
+
+export interface CommunityData {
+  twitterFollowers: number;
+  twitterMentions24h: number;
+  telegramMembers: number;
+  discordMembers: number;
+  recentMentions: TokenMention[];
+}

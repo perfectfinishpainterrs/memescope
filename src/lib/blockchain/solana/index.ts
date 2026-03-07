@@ -1,174 +1,227 @@
-// ═══════════════════════════════════════════
+// =============================================
 // Solana Blockchain Service
 // Handles: wallet scanning, transaction parsing,
-// token data, holder info via Helius API
-// ═══════════════════════════════════════════
+// token data, holder info via Moralis API
+// =============================================
 
 import { Connection, PublicKey } from "@solana/web3.js";
-import type { Position, Transaction, TokenData, HolderData } from "@/types";
+import { API_URLS } from "@/config";
+import {
+  getMoralisWalletTokens,
+  getMoralisTokenMetadata,
+} from "@/lib/blockchain/moralis";
+import type { Transaction } from "@/types";
 
-const HELIUS_KEY = process.env.HELIUS_API_KEY || "";
-const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`;
-const HELIUS_API = `https://api.helius.xyz/v0`;
+const MORALIS_KEY = process.env.MORALIS_API_KEY || "";
+const PUBLIC_RPC = "https://api.mainnet-beta.solana.com";
 
-// ── Connection ──────────────────────────
+// -- Connection ----------------------------------
 
 let connection: Connection | null = null;
 
 export function getConnection(): Connection {
   if (!connection) {
-    connection = new Connection(HELIUS_RPC, "confirmed");
+    connection = new Connection(PUBLIC_RPC, "confirmed");
   }
   return connection;
 }
 
-// ── Wallet Scan ─────────────────────────
+// -- SOL Price -----------------------------------
+
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+
+/**
+ * Fetch current SOL/USD price from CoinGecko.
+ */
+export async function getSolPrice(): Promise<number> {
+  try {
+    const res = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+    );
+    const data = await res.json();
+    return data.solana?.usd || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// -- Wallet Scan ---------------------------------
 
 /**
  * Fetch all token holdings for a wallet address.
- * Uses Helius DAS API for enriched token data.
+ * Uses Moralis SOL API for enriched token data.
  */
 export async function getWalletTokens(walletAddress: string) {
-  const response = await fetch(`${HELIUS_RPC}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "memescope",
-      method: "getAssetsByOwner",
-      params: {
-        ownerAddress: walletAddress,
-        page: 1,
-        limit: 100,
-        displayOptions: {
-          showFungible: true,
-          showNativeBalance: true,
-        },
-      },
-    }),
-  });
-
-  const data = await response.json();
-  return data.result?.items || [];
+  return getMoralisWalletTokens(walletAddress);
 }
 
 /**
- * Fetch parsed transaction history for a wallet.
- * Helius enhanced transactions give us human-readable swap data.
+ * Fetch swap history for a wallet from Moralis SOL API.
+ * Returns raw Moralis swap objects.
  */
 export async function getWalletTransactions(
   walletAddress: string,
-  limit = 100
+  _limit = 100
 ) {
-  const response = await fetch(
-    `${HELIUS_API}/addresses/${walletAddress}/transactions?api-key=${HELIUS_KEY}&limit=${limit}&type=SWAP`,
-    { method: "GET" }
-  );
-
-  const data = await response.json();
-  return data || [];
+  return getMoralisSolSwaps(walletAddress);
 }
 
 /**
- * Parse raw Helius transactions into our Transaction type.
- * Extracts: token, amount, price, direction (buy/sell), timestamp.
+ * Fetch swap history from Moralis Solana gateway.
+ */
+async function getMoralisSolSwaps(walletAddress: string) {
+  if (!MORALIS_KEY) throw new Error("MORALIS_API_KEY not configured");
+
+  const url = `${API_URLS.MORALIS_SOL}/account/mainnet/${walletAddress}/swaps`;
+  const res = await fetch(url, {
+    headers: {
+      "X-API-Key": MORALIS_KEY,
+      accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Moralis swaps ${res.status}: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Parse Moralis swap objects into our Transaction type.
+ *
+ * Moralis swap fields used:
+ *   transactionHash, blockTimestamp, baseToken, quoteToken,
+ *   bought, sold, baseAmount, quoteAmount, walletAddress
+ *
+ * Logic:
+ *   - If `bought` is truthy the wallet acquired the base token -> BUY
+ *   - If `sold` is truthy the wallet sold the base token      -> SELL
  */
 export function parseTransactions(
   rawTxns: any[],
-  targetToken?: string
+  targetToken?: string,
+  solPrice: number = 0
 ): Transaction[] {
   const transactions: Transaction[] = [];
 
-  for (const tx of rawTxns) {
-    if (tx.type !== "SWAP") continue;
+  if (!Array.isArray(rawTxns)) return transactions;
 
-    const swapEvent = tx.events?.swap;
-    if (!swapEvent) continue;
+  for (const swap of rawTxns) {
+    // Determine direction
+    const isBuy = !!swap.bought;
 
-    // Determine if this is a buy or sell of the target token
-    const tokenIn = swapEvent.tokenInputs?.[0];
-    const tokenOut = swapEvent.tokenOutputs?.[0];
+    // The token amount is always in baseAmount; the SOL/quote amount in quoteAmount
+    const tokenAmount = Number(swap.baseAmount || 0);
+    const quoteAmount = Number(swap.quoteAmount || 0);
 
-    if (!tokenIn || !tokenOut) continue;
+    // If a target token is specified, skip swaps that don't involve it
+    if (targetToken) {
+      const baseAddr =
+        typeof swap.baseToken === "string"
+          ? swap.baseToken
+          : swap.baseToken?.address || swap.baseToken?.mint || "";
+      const quoteAddr =
+        typeof swap.quoteToken === "string"
+          ? swap.quoteToken
+          : swap.quoteToken?.address || swap.quoteToken?.mint || "";
 
-    // If target token is in outputs → it's a BUY
-    // If target token is in inputs → it's a SELL
-    const isBuy = targetToken
-      ? tokenOut.mint === targetToken
-      : tokenIn.mint === "So11111111111111111111111111111111111111112"; // SOL
+      if (baseAddr !== targetToken && quoteAddr !== targetToken) {
+        continue;
+      }
+    }
 
-    const tokenAmount = isBuy
-      ? tokenOut.rawTokenAmount?.tokenAmount || 0
-      : tokenIn.rawTokenAmount?.tokenAmount || 0;
+    // Price per token in quote terms
+    const pricePerToken = tokenAmount > 0 ? quoteAmount / tokenAmount : 0;
 
-    const solAmount = isBuy
-      ? tokenIn.rawTokenAmount?.tokenAmount || 0
-      : tokenOut.rawTokenAmount?.tokenAmount || 0;
+    // Attempt to derive a USD value.
+    // If the quote side is SOL (wrapped or native), multiply by solPrice.
+    // Otherwise fall back to quoteAmount as-is (could already be USD on some pairs).
+    const quoteIsSol =
+      (typeof swap.quoteToken === "string" && swap.quoteToken === SOL_MINT) ||
+      (swap.quoteToken?.address === SOL_MINT) ||
+      (swap.quoteToken?.mint === SOL_MINT) ||
+      (swap.quoteToken?.symbol === "SOL") ||
+      (swap.quoteToken?.symbol === "WSOL");
+
+    const totalUsd = quoteIsSol ? quoteAmount * solPrice : quoteAmount;
+
+    // Timestamp: Moralis may return ISO string or epoch seconds
+    let timestamp: string;
+    if (typeof swap.blockTimestamp === "string") {
+      timestamp = new Date(swap.blockTimestamp).toISOString();
+    } else if (typeof swap.blockTimestamp === "number") {
+      timestamp = new Date(swap.blockTimestamp * 1000).toISOString();
+    } else {
+      timestamp = new Date().toISOString();
+    }
 
     transactions.push({
-      timestamp: new Date(tx.timestamp * 1000).toISOString(),
+      timestamp,
       type: isBuy ? "BUY" : "SELL",
       amount: tokenAmount,
-      price: solAmount / tokenAmount, // price in SOL per token
-      totalUsd: 0, // will be enriched with price data later
-      txHash: tx.signature,
+      price: pricePerToken,
+      totalUsd,
+      txHash: swap.transactionHash || "",
     });
   }
 
   return transactions;
 }
 
-// ── Token Data ──────────────────────────
+// -- Token Data ----------------------------------
 
 /**
- * Get token metadata via Helius DAS API.
+ * Get token metadata via Moralis SOL API.
  */
 export async function getTokenMetadata(mintAddress: string) {
-  const response = await fetch(HELIUS_RPC, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "memescope",
-      method: "getAsset",
-      params: { id: mintAddress },
-    }),
-  });
-
-  const data = await response.json();
-  return data.result;
+  return getMoralisTokenMetadata(mintAddress);
 }
 
-// ── Holder Data ─────────────────────────
+// -- Holder Data ---------------------------------
 
 /**
  * Get holder count and top holders for a token.
- * Uses Helius DAS API getAssetsByGroup or token accounts.
+ * Uses @solana/web3.js getTokenLargestAccounts (public RPC).
+ * Wrapped in try/catch to gracefully handle "Too many accounts" errors.
  */
 export async function getTokenHolders(mintAddress: string) {
-  // Method 1: Get token accounts (all holders)
-  const conn = getConnection();
-  const mint = new PublicKey(mintAddress);
+  try {
+    const conn = getConnection();
+    const mint = new PublicKey(mintAddress);
 
-  const tokenAccounts = await conn.getTokenLargestAccounts(mint);
+    const tokenAccounts = await conn.getTokenLargestAccounts(mint);
 
-  // Get total supply for percentage calculations
-  const supply = await conn.getTokenSupply(mint);
-  const totalSupply = Number(supply.value.amount);
+    // Get total supply for percentage calculations
+    const supply = await conn.getTokenSupply(mint);
+    const totalSupply = Number(supply.value.amount);
 
-  const holders = tokenAccounts.value.map((account) => ({
-    address: account.address.toBase58(),
-    amount: Number(account.amount),
-    percentage: (Number(account.amount) / totalSupply) * 100,
-  }));
+    const holders = tokenAccounts.value.map((account) => ({
+      address: account.address.toBase58(),
+      amount: Number(account.amount),
+      percentage: totalSupply > 0 ? (Number(account.amount) / totalSupply) * 100 : 0,
+    }));
 
-  return {
-    topHolders: holders,
-    totalSupply,
-  };
+    return {
+      topHolders: holders,
+      totalSupply,
+    };
+  } catch (err: any) {
+    // Gracefully handle "Too many accounts" or any other RPC error
+    const msg = err?.message || String(err);
+    if (msg.includes("Too many accounts")) {
+      console.warn(`[getTokenHolders] Too many accounts for ${mintAddress}, returning empty.`);
+    } else {
+      console.error(`[getTokenHolders] Error for ${mintAddress}:`, msg);
+    }
+    return {
+      topHolders: [],
+      totalSupply: 0,
+    };
+  }
 }
 
-// ── Mint Authority Check ────────────────
+// -- Mint Authority Check ------------------------
 
 /**
  * Check if a token still has active mint/freeze authority.

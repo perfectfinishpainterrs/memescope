@@ -8,13 +8,47 @@ import {
   getWalletTokens,
   getWalletTransactions,
   parseTransactions,
+  getSolPrice,
 } from "@/lib/blockchain/solana";
+import {
+  getEvmWalletTokens,
+  getEvmTokenInfo,
+  getEvmTokenPrice,
+} from "@/lib/blockchain/evm";
 import { getTokenData } from "@/lib/services/token-data";
 import { calculateSafetyScore } from "@/lib/scoring/safety";
 import { isValidSolanaAddress, isValidEvmAddress } from "@/lib/utils";
+import { rateLimit } from "@/lib/middleware/rate-limit";
+import { getCachedScan, setCachedScan } from "@/lib/cache";
+import { createSupabaseServer } from "@/lib/db/supabase-server";
+import type { Chain } from "@/types";
+
+function getIp(request: NextRequest): string {
+  return (
+    request.headers.get("x-forwarded-for")?.split(",")[0] ||
+    request.headers.get("x-real-ip") ||
+    "127.0.0.1"
+  );
+}
 
 export async function POST(request: NextRequest) {
   try {
+    // Rate limit
+    const ip = getIp(request);
+    const limit = rateLimit(ip, false);
+    if (!limit.allowed) {
+      return NextResponse.json(
+        { error: "Rate limit exceeded" },
+        {
+          status: 429,
+          headers: {
+            "X-RateLimit-Remaining": String(limit.remaining),
+            "X-RateLimit-Reset": String(limit.resetAt),
+          },
+        }
+      );
+    }
+
     const { address, chain } = await request.json();
 
     // Validate
@@ -39,6 +73,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check cache
+    const cached = await getCachedScan(address, chain || "SOL");
+    if (cached) {
+      return NextResponse.json(cached, {
+        headers: { "X-Cache": "HIT" },
+      });
+    }
+
     // ── Solana scan ──
     if (chain === "SOL") {
       // 1. Get all token holdings
@@ -47,24 +89,31 @@ export async function POST(request: NextRequest) {
       // 2. Get transaction history
       const rawTxns = await getWalletTransactions(address);
 
-      // 3. For each token, build position data
+      // 3. Get SOL price for USD calculations
+      const solPrice = await getSolPrice();
+
+      // 4. For each token, build position data
+      //    Moralis returns: { mint, amount, name, symbol, decimals, associatedTokenAddress }
+      const tokenList = Array.isArray(tokens) ? tokens : [];
       const positions = await Promise.all(
-        tokens
-          .filter((t: any) => t.interface === "FungibleToken")
+        tokenList
+          .filter((t: any) => Number(t.amount) > 0)
           .slice(0, 20) // limit to top 20 positions
           .map(async (token: any) => {
-            const mint = token.id;
-            const txns = parseTransactions(rawTxns, mint);
+            const mint = token.mint;
+            const txns = parseTransactions(rawTxns, mint, solPrice);
             const tokenData = await getTokenData(mint, "SOL");
             const safetyData = await calculateSafetyScore(mint, "SOL");
 
             const buys = txns.filter((t) => t.type === "BUY");
             const sells = txns.filter((t) => t.type === "SELL");
 
-            const totalBought = buys.reduce((s, b) => s + b.amount, 0);
-            const totalSold = sells.reduce((s, b) => s + b.amount, 0);
-            const holdings = totalBought - totalSold;
+            // Use actual balance from Moralis as source of truth
+            const rawBalance = Number(token.amount || 0);
+            const tokenDecimals = Number(token.decimals || 0);
+            const holdings = rawBalance / Math.pow(10, tokenDecimals);
 
+            const totalBought = buys.reduce((s, b) => s + b.amount, 0);
             const invested = buys.reduce((s, b) => s + b.totalUsd, 0);
             const currentPrice = tokenData.price || 0;
             const currentValue = holdings * currentPrice;
@@ -75,9 +124,8 @@ export async function POST(request: NextRequest) {
 
             return {
               tokenAddress: mint,
-              name: token.content?.metadata?.name || "Unknown",
-              ticker:
-                token.content?.metadata?.symbol || mint.slice(0, 6),
+              name: token.name || "Unknown",
+              ticker: token.symbol || mint.slice(0, 6),
               chain: "SOL",
               holdings,
               avgEntry,
@@ -89,7 +137,7 @@ export async function POST(request: NextRequest) {
               buys,
               sells,
               tokenData,
-              holderData: {}, // TODO: implement
+              holderData: {},
               safetyData,
             };
           })
@@ -106,7 +154,7 @@ export async function POST(request: NextRequest) {
         0
       );
 
-      return NextResponse.json({
+      const result = {
         wallet: {
           address,
           chain: "SOL",
@@ -124,13 +172,157 @@ export async function POST(request: NextRequest) {
           firstSeen: "", // TODO: get from first transaction
         },
         positions,
+      };
+
+      // Save to cache
+      await setCachedScan(address, "SOL", result, 300);
+
+      // Save to scan_history if authenticated
+      try {
+        const supabase = await createSupabaseServer();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          await supabase.from("scan_history").insert({
+            user_id: user.id,
+            address,
+            chain: "SOL",
+          });
+        }
+      } catch {
+        // Auth/history save failure is non-critical
+      }
+
+      return NextResponse.json(result, {
+        headers: {
+          "X-Cache": "MISS",
+          "Cache-Control": "private, max-age=30",
+        },
       });
     }
 
-    // ── EVM scan (Phase 8) ──
+    // ── EVM scan (ETH, BASE, BSC) ──
+    const evmChains: Chain[] = ["ETH", "BASE", "BSC"];
+    if (evmChains.includes(chain)) {
+      if (!isValidEvmAddress(address)) {
+        return NextResponse.json(
+          { error: "Invalid EVM address" },
+          { status: 400 }
+        );
+      }
+
+      // 1. Get all ERC-20 token holdings via Moralis
+      const rawTokens = await getEvmWalletTokens(address, chain);
+      const tokenList = Array.isArray(rawTokens) ? rawTokens : [];
+
+      // 2. For each token, build position data
+      const positions = await Promise.all(
+        tokenList
+          .slice(0, 20) // limit to top 20 positions
+          .map(async (token: any) => {
+            const tokenAddr = token.token_address;
+            const tokenDecimals = Number(token.decimals || 18);
+            const holdings =
+              Number(token.balance || 0) / Math.pow(10, tokenDecimals);
+
+            // Get price + on-chain info + safety in parallel
+            const [priceResult, infoResult, tokenData, safetyData] =
+              await Promise.allSettled([
+                getEvmTokenPrice(tokenAddr, chain),
+                getEvmTokenInfo(tokenAddr, chain),
+                getTokenData(tokenAddr, chain),
+                calculateSafetyScore(tokenAddr, chain),
+              ]);
+
+            const price =
+              priceResult.status === "fulfilled"
+                ? priceResult.value?.usdPrice || 0
+                : 0;
+            const info =
+              infoResult.status === "fulfilled" ? infoResult.value : null;
+            const tData =
+              tokenData.status === "fulfilled" ? tokenData.value : {};
+            const safety =
+              safetyData.status === "fulfilled" ? safetyData.value : null;
+
+            const currentPrice = price || (tData as any)?.price || 0;
+            const currentValue = holdings * currentPrice;
+
+            return {
+              tokenAddress: tokenAddr,
+              name: token.name || info?.name || "Unknown",
+              ticker: token.symbol || info?.symbol || "???",
+              chain,
+              holdings,
+              avgEntry: 0, // EVM tx history parsing not yet implemented
+              currentPrice,
+              pnl: 0,
+              pnlPct: 0,
+              invested: 0,
+              currentValue,
+              buys: [],
+              sells: [],
+              tokenData: tData,
+              holderData: {},
+              safetyData: safety || {},
+            };
+          })
+      );
+
+      // Build wallet summary
+      const totalValue = positions.reduce(
+        (s, p) => s + p.currentValue,
+        0
+      );
+
+      const result = {
+        wallet: {
+          address,
+          chain,
+          totalValue,
+          totalPnl: 0,
+          totalPnlPct: 0,
+          positionCount: positions.length,
+          txCount: 0,
+          winRate: 0,
+          firstSeen: "",
+        },
+        positions,
+      };
+
+      // Save to cache
+      await setCachedScan(address, chain, result, 300);
+
+      // Save to scan_history if authenticated
+      try {
+        const supabase = await createSupabaseServer();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          await supabase.from("scan_history").insert({
+            user_id: user.id,
+            address,
+            chain,
+          });
+        }
+      } catch {
+        // Auth/history save failure is non-critical
+      }
+
+      return NextResponse.json(result, {
+        headers: {
+          "X-Cache": "MISS",
+          "Cache-Control": "private, max-age=30",
+        },
+      });
+    }
+
+    // ── Unsupported chain ──
     return NextResponse.json(
-      { error: "EVM support coming soon" },
-      { status: 501 }
+      { error: `Unsupported chain: ${chain}` },
+      { status: 400 }
     );
   } catch (err: any) {
     console.error("Wallet scan error:", err);

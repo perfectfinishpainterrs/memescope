@@ -5,9 +5,16 @@
 // ═══════════════════════════════════════════
 
 import { SAFETY_WEIGHTS } from "@/config";
-import type { SafetyData, SafetyChecks } from "@/types";
+import type { SafetyData, SafetyChecks, Chain } from "@/types";
 import { getSafetyGrade } from "@/lib/utils";
-import { getMintInfo } from "@/lib/blockchain/solana";
+import { getConnection, getMintInfo } from "@/lib/blockchain/solana";
+import { PublicKey } from "@solana/web3.js";
+import {
+  simulateEvmSell,
+  checkEvmContractOwnership,
+} from "@/lib/blockchain/evm";
+
+const EVM_CHAINS: Chain[] = ["ETH", "BASE", "BSC"];
 
 const GOPLUS_KEY = process.env.GOPLUS_API_KEY || "";
 
@@ -19,13 +26,24 @@ const GOPLUS_KEY = process.env.GOPLUS_API_KEY || "";
  */
 export async function getGoPlusCheck(
   tokenAddress: string,
-  chainId = "solana"
+  chain = "SOL"
 ) {
   try {
-    const res = await fetch(
-      `https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=${tokenAddress}`,
-      { next: { revalidate: 300 } }
-    );
+    // GoPlus uses different endpoints per chain
+    const GOPLUS_CHAIN_MAP: Record<string, string> = {
+      SOL: "solana",
+      ETH: "1",
+      BASE: "8453",
+      BSC: "56",
+    };
+    const goplusChain = GOPLUS_CHAIN_MAP[chain] || "solana";
+
+    const isSolana = chain === "SOL";
+    const endpoint = isSolana
+      ? `https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=${tokenAddress}`
+      : `https://api.gopluslabs.io/api/v1/token_security/${goplusChain}?contract_addresses=${tokenAddress}`;
+
+    const res = await fetch(endpoint, { next: { revalidate: 300 } });
 
     if (!res.ok) return null;
 
@@ -43,28 +61,60 @@ export async function getGoPlusCheck(
  * Checks common lock providers: Raydium, Team Finance.
  */
 export async function checkLpLock(
-  _pairAddress: string,
-  _chain = "SOL"
+  pairAddress: string,
+  chain = "SOL"
 ): Promise<{
   locked: boolean;
   duration: string;
   lockedPct: string;
 }> {
-  // TODO: Implement LP lock detection
-  // 1. Find LP token mint from pair
-  // 2. Check if LP tokens are held in known lock contracts
-  // 3. Parse lock duration from contract state
-  //
-  // Known lock contracts (Solana):
-  //   - Raydium Lock: ...
-  //   - Uncx: ...
-  //   - Team Finance: ...
+  if (chain !== "SOL") {
+    return { locked: false, duration: "Unknown", lockedPct: "0%" };
+  }
 
-  return {
-    locked: false,
-    duration: "Unknown",
-    lockedPct: "0%",
-  };
+  try {
+    const conn = getConnection();
+    const lpMint = new PublicKey(pairAddress);
+
+    // Burn address — LP tokens sent here are permanently locked
+    const BURN_ADDRESS = "1111111111111111111111111111111111111111111";
+
+    // Get the largest holders of the LP token
+    const largestAccounts = await conn.getTokenLargestAccounts(lpMint);
+    const supply = await conn.getTokenSupply(lpMint);
+    const totalSupply = Number(supply.value.amount);
+
+    if (totalSupply === 0) {
+      return { locked: false, duration: "Unknown", lockedPct: "0%" };
+    }
+
+    let lockedAmount = 0;
+    let isBurned = false;
+
+    for (const account of largestAccounts.value) {
+      const ownerInfo = await conn.getParsedAccountInfo(account.address);
+      const parsed = (ownerInfo.value?.data as any)?.parsed?.info;
+      const owner = parsed?.owner;
+
+      if (!owner) continue;
+
+      // Check if owner is the burn address (permanently locked)
+      if (owner === BURN_ADDRESS) {
+        lockedAmount += Number(account.amount);
+        isBurned = true;
+      }
+    }
+
+    const lockedPct = (lockedAmount / totalSupply) * 100;
+
+    return {
+      locked: lockedPct > 50,
+      duration: isBurned ? "Burned (permanent)" : "Unknown",
+      lockedPct: `${lockedPct.toFixed(1)}%`,
+    };
+  } catch {
+    return { locked: false, duration: "Unknown", lockedPct: "0%" };
+  }
 }
 
 // ── Honeypot Simulation ─────────────────
@@ -74,27 +124,98 @@ export async function checkLpLock(
  * Sends a simulated transaction to check if selling is possible.
  */
 export async function simulateSell(
-  _tokenAddress: string,
-  _chain = "SOL"
+  tokenAddress: string,
+  chain = "SOL"
 ): Promise<{
   canSell: boolean;
   sellTax: number;
   buyTax: number;
 }> {
-  // TODO: Implement sell simulation
-  // Solana: Use Jupiter quote API to simulate a swap
-  // EVM: Use Tenderly or similar to simulate
-  //
-  // Steps:
-  // 1. Get quote for selling X tokens for SOL
-  // 2. If quote fails → honeypot
-  // 3. Compare expected vs actual output → detect tax
+  if (EVM_CHAINS.includes(chain as Chain)) {
+    try {
+      const result = await simulateEvmSell(tokenAddress, chain as Chain);
+      return {
+        canSell: !result.honeypot,
+        sellTax: result.sellTax,
+        buyTax: 0,
+      };
+    } catch {
+      return { canSell: true, sellTax: 0, buyTax: 0 };
+    }
+  }
 
-  return {
-    canSell: true,
-    sellTax: 0,
-    buyTax: 0,
-  };
+  if (chain !== "SOL") {
+    return { canSell: true, sellTax: 0, buyTax: 0 };
+  }
+
+  try {
+    const SOL_MINT = "So11111111111111111111111111111111111111112";
+    // Simulate selling 1M base units of the token for SOL via Jupiter
+    const sellAmount = 1_000_000;
+
+    const sellRes = await fetch(
+      `https://quote-api.jup.ag/v6/quote?inputMint=${tokenAddress}&outputMint=${SOL_MINT}&amount=${sellAmount}&slippageBps=5000`,
+      { signal: AbortSignal.timeout(10_000) }
+    );
+
+    if (!sellRes.ok) {
+      // Quote API returned error — likely honeypot or unlisted
+      return { canSell: false, sellTax: 100, buyTax: 0 };
+    }
+
+    const sellData = await sellRes.json();
+
+    // No output or zero output means honeypot
+    if (!sellData.outAmount || Number(sellData.outAmount) === 0) {
+      return { canSell: false, sellTax: 100, buyTax: 0 };
+    }
+
+    // Estimate sell tax from price impact
+    // Jupiter's priceImpactPct is negative for price impact
+    const priceImpact = Math.abs(parseFloat(sellData.priceImpactPct || "0"));
+    // If price impact > 50%, it's effectively a honeypot
+    if (priceImpact > 50) {
+      return { canSell: false, sellTax: priceImpact, buyTax: 0 };
+    }
+
+    // Estimate tax: compare inAmount vs outAmount value ratio
+    // A legitimate token should have minimal difference beyond slippage
+    const inAmount = Number(sellData.inAmount);
+    const outAmount = Number(sellData.outAmount);
+
+    // Also do a reverse quote (buy) to detect buy tax
+    let buyTax = 0;
+    try {
+      const buyRes = await fetch(
+        `https://quote-api.jup.ag/v6/quote?inputMint=${SOL_MINT}&outputMint=${tokenAddress}&amount=${outAmount}&slippageBps=5000`,
+        { signal: AbortSignal.timeout(10_000) }
+      );
+      if (buyRes.ok) {
+        const buyData = await buyRes.json();
+        const buyOut = Number(buyData.outAmount || 0);
+        // If we sell X tokens and get Y SOL, then buy with Y SOL,
+        // we should get close to X tokens back. Difference = round-trip tax.
+        if (buyOut > 0 && inAmount > 0) {
+          const roundTripLoss = ((inAmount - buyOut) / inAmount) * 100;
+          // Split round-trip loss roughly in half for buy tax
+          buyTax = Math.max(0, roundTripLoss / 2);
+        }
+      }
+    } catch {
+      // Buy quote failed — not critical
+    }
+
+    // Sell tax estimate from price impact beyond normal slippage (~2% baseline)
+    const sellTax = Math.max(0, priceImpact - 2);
+
+    return {
+      canSell: true,
+      sellTax: Math.round(sellTax * 100) / 100,
+      buyTax: Math.round(buyTax * 100) / 100,
+    };
+  } catch {
+    return { canSell: true, sellTax: 0, buyTax: 0 };
+  }
 }
 
 // ── Deployer Analysis ───────────────────
@@ -103,25 +224,159 @@ export async function simulateSell(
  * Trace the deployer wallet and check for linked rugs.
  */
 export async function analyzeDeployer(
-  _tokenAddress: string
+  tokenAddress: string,
+  chain = "SOL"
 ): Promise<{
   deployerAddress: string;
   previousTokens: number;
   ruggedTokens: number;
   history: string;
 }> {
-  // TODO: Implement deployer tracing
-  // 1. Find the first transaction that created this token
-  // 2. Get the signer = deployer
-  // 3. Find all other tokens deployed by same wallet
-  // 4. Cross-reference with known rug databases
+  // EVM deployer analysis requires Etherscan/Basescan API — placeholder for now
+  if (EVM_CHAINS.includes(chain as Chain)) {
+    return {
+      deployerAddress: "",
+      previousTokens: 0,
+      ruggedTokens: 0,
+      history: "EVM deployer analysis not yet available",
+    };
+  }
 
-  return {
-    deployerAddress: "",
-    previousTokens: 0,
-    ruggedTokens: 0,
-    history: "Unable to analyze — coming soon",
-  };
+  try {
+    const conn = getConnection();
+    const mintPubkey = new PublicKey(tokenAddress);
+
+    // Get the oldest signatures for the token mint account
+    // This includes the mint creation transaction
+    const signatures = await conn.getSignaturesForAddress(mintPubkey, {
+      limit: 1,
+    });
+
+    // getSignaturesForAddress returns newest first, but with limit:1 we get the most recent
+    // We need the oldest — fetch with 'before' navigation or get all and take last
+    // For efficiency, fetch a batch and take the last one
+    let oldestSig = signatures[0];
+
+    // Walk backwards to find the very first transaction
+    if (oldestSig) {
+      let lastSig = oldestSig.signature;
+      let batch = signatures;
+      while (batch.length > 0) {
+        batch = await conn.getSignaturesForAddress(mintPubkey, {
+          limit: 1000,
+          before: lastSig,
+        });
+        if (batch.length > 0) {
+          oldestSig = batch[batch.length - 1];
+          lastSig = oldestSig.signature;
+        }
+      }
+    }
+
+    if (!oldestSig) {
+      return {
+        deployerAddress: "",
+        previousTokens: 0,
+        ruggedTokens: 0,
+        history: "No transactions found for this token",
+      };
+    }
+
+    // Get the full transaction to find the fee payer (deployer)
+    const tx = await conn.getParsedTransaction(oldestSig.signature, {
+      maxSupportedTransactionVersion: 0,
+    });
+
+    if (!tx?.transaction?.message) {
+      return {
+        deployerAddress: "",
+        previousTokens: 0,
+        ruggedTokens: 0,
+        history: "Could not parse creation transaction",
+      };
+    }
+
+    // Fee payer is the first account key — this is the deployer
+    const deployer =
+      tx.transaction.message.accountKeys[0]?.pubkey?.toBase58() || "";
+
+    if (!deployer) {
+      return {
+        deployerAddress: "",
+        previousTokens: 0,
+        ruggedTokens: 0,
+        history: "Could not identify deployer",
+      };
+    }
+
+    // Check deployer's recent transaction history for other token mints
+    const deployerSigs = await conn.getSignaturesForAddress(
+      new PublicKey(deployer),
+      { limit: 100 }
+    );
+
+    // Look for InitializeMint instructions in deployer's history
+    let previousTokens = 0;
+    let ruggedTokens = 0;
+    const rugHistory: string[] = [];
+
+    // Sample up to 20 transactions to check for other token creations
+    const sampleSigs = deployerSigs.slice(0, 20);
+    for (const sig of sampleSigs) {
+      try {
+        const deployerTx = await conn.getParsedTransaction(sig.signature, {
+          maxSupportedTransactionVersion: 0,
+        });
+        if (!deployerTx?.transaction?.message?.instructions) continue;
+
+        for (const ix of deployerTx.transaction.message.instructions) {
+          const parsed = (ix as any).parsed;
+          if (parsed?.type === "initializeMint" || parsed?.type === "initializeMint2") {
+            const mintAddr = parsed.info?.mint;
+            if (mintAddr && mintAddr !== tokenAddress) {
+              previousTokens++;
+
+              // Quick liquidity check — see if this token has any value
+              try {
+                const tokenSupply = await conn.getTokenSupply(new PublicKey(mintAddr));
+                const supply = Number(tokenSupply.value.amount);
+                // If supply is 0 or very low, likely a dead/rugged token
+                if (supply === 0) {
+                  ruggedTokens++;
+                  rugHistory.push(mintAddr);
+                }
+              } catch {
+                // Token account may not exist anymore — likely rugged
+                ruggedTokens++;
+                rugHistory.push(mintAddr);
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip transactions we can't parse
+      }
+    }
+
+    const historyMsg =
+      previousTokens === 0
+        ? "Clean — no other tokens found from this deployer"
+        : `Deployer created ${previousTokens} other token(s), ${ruggedTokens} appear dead/rugged`;
+
+    return {
+      deployerAddress: deployer,
+      previousTokens,
+      ruggedTokens,
+      history: historyMsg,
+    };
+  } catch {
+    return {
+      deployerAddress: "",
+      previousTokens: 0,
+      ruggedTokens: 0,
+      history: "Unable to analyze deployer",
+    };
+  }
 }
 
 // ── Main Safety Score Calculator ────────
@@ -133,14 +388,17 @@ export async function calculateSafetyScore(
   tokenAddress: string,
   chain = "SOL"
 ): Promise<SafetyData> {
+  const isEvm = EVM_CHAINS.includes(chain as Chain);
+
   // Run checks in parallel
-  const [mintInfo, goPlusData, lpLockData, honeypotData, deployerData] =
+  const [mintInfo, goPlusData, lpLockData, honeypotData, deployerData, ownershipData] =
     await Promise.allSettled([
       chain === "SOL" ? getMintInfo(tokenAddress) : null,
       getGoPlusCheck(tokenAddress, chain),
       checkLpLock(tokenAddress, chain),
       simulateSell(tokenAddress, chain),
-      analyzeDeployer(tokenAddress),
+      analyzeDeployer(tokenAddress, chain),
+      isEvm ? checkEvmContractOwnership(tokenAddress, chain as Chain) : null,
     ]);
 
   const mint = mintInfo.status === "fulfilled" ? mintInfo.value : null;
@@ -148,20 +406,36 @@ export async function calculateSafetyScore(
   const lpLock = lpLockData.status === "fulfilled" ? lpLockData.value : null;
   const honeypot = honeypotData.status === "fulfilled" ? honeypotData.value : null;
   const deployer = deployerData.status === "fulfilled" ? deployerData.value : null;
+  const ownership = ownershipData.status === "fulfilled" ? ownershipData.value : null;
+
+  // For EVM: use contract ownership + GoPlus data; for SOL: use mint info
+  const contractRenounced = isEvm
+    ? ownership?.renounced || goplus?.owner_address === "0x0000000000000000000000000000000000000000"
+    : !mint?.mintAuthority && !mint?.freezeAuthority;
+
+  const mintAuthority = isEvm
+    ? goplus?.can_take_back_ownership === "1"
+    : !!mint?.mintAuthority;
+
+  const freezeAuthority = isEvm
+    ? goplus?.transfer_pausable === "1"
+    : !!mint?.freezeAuthority;
 
   // Build checks object
   const checks: SafetyChecks = {
     lpLocked: lpLock?.locked || false,
     lpLockDuration: lpLock?.duration || "Unknown",
     lpLockedPct: lpLock?.lockedPct || "0%",
-    contractRenounced: !mint?.mintAuthority && !mint?.freezeAuthority,
-    honeypot: !(honeypot?.canSell ?? true),
+    contractRenounced,
+    honeypot: isEvm
+      ? goplus?.is_honeypot === "1" || !(honeypot?.canSell ?? true)
+      : !(honeypot?.canSell ?? true),
     proxyContract: goplus?.is_proxy === "1",
-    mintAuthority: !!mint?.mintAuthority,
-    freezeAuthority: !!mint?.freezeAuthority,
+    mintAuthority,
+    freezeAuthority,
     blacklistFunction: goplus?.is_blacklisted === "1",
-    buyTax: honeypot?.buyTax ? `${honeypot.buyTax}%` : "0%",
-    sellTax: honeypot?.sellTax ? `${honeypot.sellTax}%` : "0%",
+    buyTax: honeypot?.buyTax ? `${honeypot.buyTax}%` : goplus?.buy_tax ? `${(parseFloat(goplus.buy_tax) * 100).toFixed(1)}%` : "0%",
+    sellTax: honeypot?.sellTax ? `${honeypot.sellTax}%` : goplus?.sell_tax ? `${(parseFloat(goplus.sell_tax) * 100).toFixed(1)}%` : "0%",
     devWalletPct: "Unknown", // TODO: calculate from holder data
     devSelling: false,        // TODO: check recent deployer txns
     linkedRugs: deployer?.ruggedTokens || 0,

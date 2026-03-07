@@ -1,27 +1,93 @@
 // ═══════════════════════════════════════════
-// Twitter/X Research Service (Phase 5)
-// Implements the x-research-skill pattern:
-// multi-query decomposition → search → synthesize
+// Twitter/X Research Service
+// Primary: Grok xAI API (has native X search)
+// Fallback: X API v2 (direct bearer token)
 // ═══════════════════════════════════════════
 
 import { API_URLS } from "@/config";
 import type { Tweet, SentimentScore } from "@/types";
 
+const GROK_KEY = process.env.GROK_API_KEY || process.env.XAI_API_KEY || "";
 const X_TOKEN = process.env.X_BEARER_TOKEN || "";
 
-// ── Core Search ─────────────────────────
+// ── Grok xAI Search (primary) ───────────
 
 /**
- * Search X/Twitter API with a query.
- * Returns parsed tweets with metrics.
+ * Use Grok to search X/Twitter and return structured tweet data.
+ * Grok has native access to X posts — no separate X API key needed.
  */
-export async function searchX(
+async function searchViaGrok(
   query: string,
-  maxResults = 100
+  maxResults = 50
 ): Promise<Tweet[]> {
-  if (!X_TOKEN) {
-    throw new Error("X_BEARER_TOKEN not configured");
+  if (!GROK_KEY) return [];
+
+  const res = await fetch(`${API_URLS.GROK}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${GROK_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "grok-3",
+      messages: [
+        {
+          role: "system",
+          content: `You are a crypto sentiment analyst. Search X/Twitter for the given query and return the most relevant recent posts. Return ONLY a JSON array of tweets with this exact structure, no other text:
+[{"id":"tweet_id","text":"tweet text","username":"handle","displayName":"Name","followers":1000,"verified":false,"likes":50,"impressions":500,"timestamp":"2024-01-01T00:00:00Z","linkedUrls":[]}]
+Return up to ${maxResults} tweets. Focus on crypto-relevant posts, not spam.`,
+        },
+        {
+          role: "user",
+          content: `Search X for: ${query}`,
+        },
+      ],
+      search_parameters: {
+        mode: "on",
+        sources: [{ type: "x" }],
+      },
+    }),
+  });
+
+  if (!res.ok) return [];
+
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content || "";
+
+  // Parse JSON from response (handle markdown code blocks)
+  const jsonMatch = content.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) return [];
+
+  try {
+    const tweets: any[] = JSON.parse(jsonMatch[0]);
+    return tweets.map((t: any) => ({
+      id: t.id || `grok_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      text: t.text || "",
+      username: t.username || "unknown",
+      displayName: t.displayName || t.username || "Unknown",
+      followers: t.followers || 0,
+      verified: t.verified || false,
+      likes: t.likes || 0,
+      impressions: t.impressions || 0,
+      timestamp: t.timestamp || new Date().toISOString(),
+      sentiment: classifySentiment(t.text || ""),
+      linkedUrls: t.linkedUrls || [],
+    }));
+  } catch {
+    return [];
   }
+}
+
+// ── X API v2 Search (fallback) ──────────
+
+/**
+ * Direct X API v2 search. Requires X_BEARER_TOKEN.
+ */
+async function searchViaXApi(
+  query: string,
+  maxResults = 50
+): Promise<Tweet[]> {
+  if (!X_TOKEN) return [];
 
   const encoded = encodeURIComponent(query);
   const url = `${API_URLS.X_API}/tweets/search/recent?query=${encoded}&max_results=${maxResults}&tweet.fields=created_at,public_metrics,author_id,conversation_id,entities&expansions=author_id&user.fields=username,name,public_metrics,verified&sort_order=relevancy`;
@@ -30,9 +96,7 @@ export async function searchX(
     headers: { Authorization: `Bearer ${X_TOKEN}` },
   });
 
-  if (!res.ok) {
-    throw new Error(`X API error: ${res.status}`);
-  }
+  if (!res.ok) return [];
 
   const data = await res.json();
   const users = new Map(
@@ -40,7 +104,7 @@ export async function searchX(
   );
 
   return (data.data || []).map((t: any) => {
-    const user = users.get(t.author_id) || {};
+    const user: any = users.get(t.author_id) || {};
     return {
       id: t.id,
       text: t.text,
@@ -52,31 +116,46 @@ export async function searchX(
       impressions: t.public_metrics?.impression_count || 0,
       timestamp: t.created_at,
       sentiment: classifySentiment(t.text),
-      linkedUrls: (t.entities?.urls || []).map(
-        (u: any) => u.expanded_url
-      ),
+      linkedUrls: (t.entities?.urls || []).map((u: any) => u.expanded_url),
     };
   });
+}
+
+// ── Unified Search ──────────────────────
+
+/**
+ * Search X/Twitter — tries Grok first, falls back to X API v2.
+ */
+export async function searchX(
+  query: string,
+  maxResults = 50
+): Promise<Tweet[]> {
+  // Try Grok first (has native X access)
+  if (GROK_KEY) {
+    const results = await searchViaGrok(query, maxResults);
+    if (results.length > 0) return results;
+  }
+
+  // Fallback to direct X API
+  if (X_TOKEN) {
+    return searchViaXApi(query, maxResults);
+  }
+
+  throw new Error("No X search provider configured. Set GROK_API_KEY or X_BEARER_TOKEN.");
 }
 
 // ── Query Decomposition ─────────────────
 
 /**
- * Decompose a research question into multiple targeted X searches.
- * Models the x-research-skill approach.
+ * Decompose a ticker into multiple targeted X searches.
  */
 export function decomposeQuery(ticker: string): string[] {
   const clean = ticker.replace("$", "");
   return [
-    // Core sentiment
     `$${clean} -is:retweet lang:en`,
-    // Bullish signals
     `$${clean} (moon OR pump OR bullish OR gem OR launch) -is:retweet`,
-    // Bearish / risk signals
     `$${clean} (rug OR scam OR honeypot OR dump OR "don't buy") -is:retweet`,
-    // DEX links
     `$${clean} (dexscreener OR birdeye OR dextools) has:links -is:retweet`,
-    // Filter out spam
     `$${clean} -airdrop -giveaway -whitelist -is:retweet lang:en`,
   ];
 }
@@ -95,10 +174,6 @@ const BEARISH_WORDS = new Set([
   "don't buy", "warning", "red flag", "ponzi",
 ]);
 
-/**
- * Simple keyword-based sentiment classification.
- * Returns: bullish, bearish, or neutral.
- */
 export function classifySentiment(
   text: string
 ): "bullish" | "bearish" | "neutral" {
@@ -106,12 +181,12 @@ export function classifySentiment(
   let bull = 0;
   let bear = 0;
 
-  for (const word of BULLISH_WORDS) {
+  BULLISH_WORDS.forEach((word) => {
     if (lower.includes(word)) bull++;
-  }
-  for (const word of BEARISH_WORDS) {
+  });
+  BEARISH_WORDS.forEach((word) => {
     if (lower.includes(word)) bear++;
-  }
+  });
 
   if (bull > bear) return "bullish";
   if (bear > bull) return "bearish";
@@ -139,17 +214,14 @@ export function calculateSentiment(tweets: Tweet[]): SentimentScore {
   }
 
   const total = tweets.length;
-  const overall =
-    (counts.bullish - counts.bearish) / total; // -1 to 1
+  const overall = (counts.bullish - counts.bearish) / total;
 
-  const topTweet = [...tweets].sort(
-    (a, b) => b.likes - a.likes
-  )[0];
+  const topTweet = [...tweets].sort((a, b) => b.likes - a.likes)[0];
 
   return {
-    bullish: counts.bullish / total,
-    bearish: counts.bearish / total,
-    neutral: counts.neutral / total,
+    bullish: (counts.bullish / total) * 100,
+    bearish: (counts.bearish / total) * 100,
+    neutral: (counts.neutral / total) * 100,
     overall,
     totalTweets: total,
     topTweet,

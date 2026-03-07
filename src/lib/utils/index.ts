@@ -8,33 +8,38 @@ export function cn(...inputs: ClassValue[]) {
 
 // ── Number formatters ───────────────────
 
-export function formatUsd(n: number): string {
-  if (Math.abs(n) >= 1e6) return "$" + (n / 1e6).toFixed(1) + "M";
-  if (Math.abs(n) >= 1e3) return "$" + (n / 1e3).toFixed(1) + "K";
-  return "$" + n.toFixed(2);
+export function formatUsd(n: number | undefined | null): string {
+  const v = n ?? 0;
+  if (Math.abs(v) >= 1e6) return "$" + (v / 1e6).toFixed(1) + "M";
+  if (Math.abs(v) >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+  return "$" + v.toFixed(2);
 }
 
-export function formatNumber(n: number): string {
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + "M";
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + "K";
-  return n.toLocaleString();
+export function formatNumber(n: number | undefined | null): string {
+  const v = n ?? 0;
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return v.toLocaleString();
 }
 
-export function formatPrice(n: number): string {
-  if (n < 0.000001) return n.toFixed(9);
-  if (n < 0.001) return n.toFixed(6);
-  if (n < 1) return n.toFixed(4);
-  return n.toFixed(2);
+export function formatPrice(n: number | undefined | null): string {
+  const v = n ?? 0;
+  if (v < 0.000001) return v.toFixed(9);
+  if (v < 0.001) return v.toFixed(6);
+  if (v < 1) return v.toFixed(4);
+  return v.toFixed(2);
 }
 
-export function formatPct(n: number): string {
-  const sign = n >= 0 ? "+" : "";
-  return sign + n.toFixed(1) + "%";
+export function formatPct(n: number | undefined | null): string {
+  const v = n ?? 0;
+  const sign = v >= 0 ? "+" : "";
+  return sign + v.toFixed(1) + "%";
 }
 
-export function formatPnl(n: number): string {
-  const sign = n >= 0 ? "+" : "";
-  return sign + formatUsd(n);
+export function formatPnl(n: number | undefined | null): string {
+  const v = n ?? 0;
+  const sign = v >= 0 ? "+" : "";
+  return sign + formatUsd(v);
 }
 
 // ── Address formatters ──────────────────
@@ -52,9 +57,9 @@ export function isValidEvmAddress(addr: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(addr);
 }
 
-export function detectChain(addr: string): "SOL" | "EVM" | null {
+export function detectChain(addr: string): "SOL" | "ETH" | null {
   if (isValidSolanaAddress(addr)) return "SOL";
-  if (isValidEvmAddress(addr)) return "EVM";
+  if (isValidEvmAddress(addr)) return "ETH";
   return null;
 }
 
