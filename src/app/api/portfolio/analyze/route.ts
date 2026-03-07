@@ -119,15 +119,18 @@ export async function POST(request: NextRequest) {
 
 ${dataBlock}
 
-Provide a structured analysis with these exact sections:
-1. **Portfolio Grade** — Rate A-F. Diversified or degen? Small portfolio is fine — still grade it.
-2. **PnL Analysis** — Winners vs losers from the trade data. Estimate realized PnL where possible. If few trades, analyze the positions themselves.
-3. **Trading Patterns** — Buying high/selling low? Taking profits or diamond handing? Chasing pumps? If limited trade history, analyze the current holdings strategy instead.
-4. **Risk Assessment** — Concentration risk, suspicious tokens, overexposure. Rate risk LOW/MEDIUM/HIGH.
-5. **Recommendations** — Specific actionable advice. Which positions to cut, hold, or add to. Be decisive.
-6. **Trader Score** — Rate 1-100. Even a small portfolio gets a score.
+Respond with ONLY a valid JSON object (no markdown, no code fences, no extra text). Use this exact structure:
 
-RULES: Reference specific tokens and numbers. Be direct and opinionated. Never say you need more data. Never refuse to analyze. Every wallet gets a full assessment regardless of size. This is a live trading tool.`,
+{
+  "portfolioGrade": "Your A-F grade with 2-3 sentence explanation. Diversified or degen? Small portfolio is fine — still grade it.",
+  "pnlAnalysis": "Winners vs losers from the trade data. Estimate realized PnL where possible. Reference specific tokens and dollar amounts.",
+  "tradingPatterns": "Buying high/selling low? Taking profits or diamond handing? Chasing pumps? Analyze the trading behavior with specific examples.",
+  "riskAssessment": "Concentration risk, suspicious tokens, overexposure. End with a clear rating: LOW, MEDIUM, HIGH, or EXTREME.",
+  "recommendations": "Specific actionable advice. Which positions to cut, hold, or add to. Be decisive and reference actual tokens.",
+  "traderScore": "A number 1-100 followed by a one-sentence justification."
+}
+
+RULES: Reference specific tokens and numbers. Be direct and opinionated. Never say you need more data. Never refuse to analyze. Every wallet gets a full assessment regardless of size.`,
           },
         ],
       }),
@@ -143,24 +146,35 @@ RULES: Reference specific tokens and numbers. Be direct and opinionated. Never s
       .filter(Boolean)
       .join("\n");
 
-    // Parse sections
-    const getSection = (header: string): string => {
-      const regex = new RegExp(
-        `\\*\\*${header}\\*\\*[:\\s—-]*([\\s\\S]*?)(?=\\n\\d+\\.\\s*\\*\\*|$)`,
-        "i"
-      );
-      const match = (text || "").match(regex);
-      return match?.[1]?.trim() || "";
-    };
+    // Parse JSON response from Claude
+    let parsed: any = {};
+    try {
+      // Strip markdown code fences if Claude added them anyway
+      const cleaned = (text || "")
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```\s*$/, "")
+        .trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      // Fallback: return raw text in all fields
+      parsed = {
+        portfolioGrade: text || "Analysis failed",
+        pnlAnalysis: "",
+        tradingPatterns: "",
+        riskAssessment: "",
+        recommendations: "",
+        traderScore: "",
+      };
+    }
 
     return NextResponse.json({
       timestamp: new Date().toISOString(),
-      portfolioGrade: getSection("Portfolio Grade"),
-      pnlAnalysis: getSection("PnL Analysis"),
-      tradingPatterns: getSection("Trading Patterns"),
-      riskAssessment: getSection("Risk Assessment"),
-      recommendations: getSection("Recommendations"),
-      traderScore: getSection("Trader Score"),
+      portfolioGrade: parsed.portfolioGrade || "",
+      pnlAnalysis: parsed.pnlAnalysis || "",
+      tradingPatterns: parsed.tradingPatterns || "",
+      riskAssessment: parsed.riskAssessment || "",
+      recommendations: parsed.recommendations || "",
+      traderScore: parsed.traderScore || "",
       raw: text,
     });
   } catch (err: any) {

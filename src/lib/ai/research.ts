@@ -128,15 +128,18 @@ export async function generateResearchBriefing(
 
 ${dataBlock}
 
-Provide a structured briefing with these exact sections:
-1. **Overview** — What this token is, current price/volume/liquidity state. If data is sparse, say what you can infer.
-2. **Chart Analysis** — Analyze price action from available numbers: 24h change direction, volume vs market cap ratio, liquidity health. Flag any warning signs.
-3. **Holder Analysis** — Analyze holder count, concentration, whale behavior if available. If holder data is limited, note what the available numbers suggest.
-4. **Twitter Sentiment** — Summarize community buzz and sentiment. If no Twitter data, skip this section entirely (don't mention it's missing).
-5. **Risk Assessment** — Overall risk level using safety scores, holder concentration, liquidity. Give a clear risk rating (LOW/MEDIUM/HIGH/EXTREME).
-6. **Verdict** — Your call: BUY / HOLD / AVOID. One decisive sentence why.
+Respond with ONLY a valid JSON object (no markdown, no code fences, no extra text). Use this exact structure:
 
-RULES: Reference specific numbers. Be direct and opinionated. Never say "I don't have enough data" — just analyze what's there. Never break character. This is a live trading tool.`,
+{
+  "overview": "What this token is, current price/volume/liquidity state. Reference specific numbers.",
+  "chartAnalysis": "Price action analysis: 24h change direction, volume vs market cap ratio, liquidity health. Flag warning signs.",
+  "holderAnalysis": "Holder count, concentration, whale behavior. What the numbers suggest about distribution.",
+  "sentiment": "Community buzz and sentiment summary. If no Twitter data available, write 'No sentiment data available' and move on.",
+  "riskAssessment": "Overall risk using safety scores, holder concentration, liquidity. End with a clear rating: LOW, MEDIUM, HIGH, or EXTREME.",
+  "verdict": "One word: BUY, HOLD, or AVOID. Then one decisive sentence why."
+}
+
+RULES: Reference specific numbers. Be direct and opinionated. Never say you need more data. Never break character. This is a live trading tool.`,
         },
       ],
     }),
@@ -153,34 +156,31 @@ RULES: Reference specific numbers. Be direct and opinionated. Never say "I don't
     .filter(Boolean)
     .join("\n");
 
-  const sections = parseBriefingSections(text || "");
+  // Parse JSON response from Claude
+  let parsed: any = {};
+  try {
+    const cleaned = (text || "")
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/, "")
+      .trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    // Fallback: put raw text in overview
+    parsed = { overview: text || "Analysis failed" };
+  }
+
   const query = ctx.ticker ? `$${ctx.ticker}` : ctx.address || "";
 
   return {
     query,
     timestamp: new Date().toISOString(),
-    ...sections,
+    overview: parsed.overview || "",
+    chartAnalysis: parsed.chartAnalysis || "",
+    holderAnalysis: parsed.holderAnalysis || "",
+    sentiment: parsed.sentiment || "",
+    riskAssessment: parsed.riskAssessment || "",
+    verdict: parsed.verdict || "",
+    keyVoices: "",
     sources: [],
-  };
-}
-
-function parseBriefingSections(text: string) {
-  const getSection = (header: string): string => {
-    const regex = new RegExp(
-      `\\*\\*${header}\\*\\*[:\\s—-]*([\\s\\S]*?)(?=\\n\\d+\\.\\s*\\*\\*|$)`,
-      "i"
-    );
-    const match = text.match(regex);
-    return match?.[1]?.trim() || "";
-  };
-
-  return {
-    overview: getSection("Overview") || text.slice(0, 500),
-    chartAnalysis: getSection("Chart Analysis"),
-    holderAnalysis: getSection("Holder Analysis"),
-    sentiment: getSection("Twitter Sentiment"),
-    riskAssessment: getSection("Risk Assessment"),
-    verdict: getSection("Verdict"),
-    keyVoices: "", // kept for type compat
   };
 }
