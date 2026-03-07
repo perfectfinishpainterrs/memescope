@@ -233,18 +233,24 @@ export default function PortfolioPage() {
     }))
   }, [transactions])
 
-  // PnL by token
+  // PnL by token — only count tokens where we have BOTH buys and sells
   const pnlByToken = useMemo(() => {
     if (!transactions.length) return []
-    const tokenMap = new Map<string, { symbol: string; spent: number; received: number }>()
+    const tokenMap = new Map<string, { symbol: string; spent: number; received: number; hasBuy: boolean; hasSell: boolean }>()
     transactions.forEach((tx) => {
       const key = tx.tokenSymbol || tx.tokenAddress
-      if (!tokenMap.has(key)) tokenMap.set(key, { symbol: tx.tokenSymbol, spent: 0, received: 0 })
+      if (!tokenMap.has(key)) tokenMap.set(key, { symbol: tx.tokenSymbol, spent: 0, received: 0, hasBuy: false, hasSell: false })
       const t = tokenMap.get(key)!
-      if (tx.type === 'BUY') t.spent += tx.usdValue || 0
-      else t.received += tx.usdValue || 0
+      if (tx.type === 'BUY') {
+        t.spent += tx.usdValue || 0
+        t.hasBuy = true
+      } else {
+        t.received += tx.usdValue || 0
+        t.hasSell = true
+      }
     })
     return [...tokenMap.values()]
+      .filter((t) => t.hasBuy && t.hasSell) // Only tokens with both buys AND sells
       .map((t) => ({ symbol: t.symbol, pnl: Number((t.received - t.spent).toFixed(2)) }))
       .sort((a, b) => b.pnl - a.pnl)
       .slice(0, 10)

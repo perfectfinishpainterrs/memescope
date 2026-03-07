@@ -78,7 +78,14 @@ export async function POST(request: NextRequest) {
       const totalSpent = tokenBuys.reduce((s: number, t: any) => s + (t.usdValue || 0), 0);
       const totalReceived = tokenSells.reduce((s: number, t: any) => s + (t.usdValue || 0), 0);
 
-      lines.push(`$${symbol}: Bought ${totalBought.toFixed(2)} ($${totalSpent.toFixed(2)}) | Sold ${totalSold.toFixed(2)} ($${totalReceived.toFixed(2)}) | PnL: $${(totalReceived - totalSpent).toFixed(2)}`);
+      const hasBoth = tokenBuys.length > 0 && tokenSells.length > 0;
+      const pnlStr = hasBoth
+        ? `PnL: $${(totalReceived - totalSpent).toFixed(2)}`
+        : tokenSells.length > 0
+          ? "PnL: N/A (buys not in history)"
+          : "PnL: N/A (no sells yet)";
+
+      lines.push(`$${symbol}: Bought ${totalBought.toFixed(2)} ($${totalSpent.toFixed(2)}) | Sold ${totalSold.toFixed(2)} ($${totalReceived.toFixed(2)}) | ${pnlStr}`);
     });
 
     // Show last 15 individual trades
