@@ -14,10 +14,59 @@ import {
 import type { HolderData, HolderBucket, HolderPoint, HolderFlowPoint, Chain } from "@/types";
 
 const MORALIS_KEY = process.env.MORALIS_API_KEY || "";
+const HELIUS_KEY = process.env.HELIUS_API_KEY || "";
+const HELIUS_RPC = process.env.HELIUS_RPC_URL || "";
 
 /**
- * Count total holders by paginating Moralis top-holders.
- * First page returns 100 + cursor; we follow cursors up to 10 pages (1000 holders).
+ * Count total holders via Helius DAS getTokenAccounts.
+ * Fires pages in parallel for speed (~200ms total regardless of holder count).
+ */
+async function countHeliusHolders(mint: string): Promise<number> {
+  const rpcUrl = HELIUS_RPC || (HELIUS_KEY ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}` : "");
+  if (!rpcUrl) return 0;
+
+  async function getPage(page: number): Promise<number> {
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: page,
+          method: "getTokenAccounts",
+          params: { mint, limit: 1000, page },
+        }),
+      });
+      if (!res.ok) return 0;
+      const data = await res.json();
+      return data.result?.token_accounts?.length || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  try {
+    // First check page 1
+    const page1 = await getPage(1);
+    if (page1 < 1000) return page1;
+
+    // Fire pages 2-20 in parallel (handles up to 20,000 holders)
+    const pages = Array.from({ length: 19 }, (_, i) => i + 2);
+    const results = await Promise.all(pages.map(getPage));
+
+    let total = page1;
+    for (const count of results) {
+      total += count;
+      if (count < 1000) break; // found the last page
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Fallback: count holders via Moralis pagination (max 1000).
  */
 async function countMoralisHolders(address: string): Promise<number> {
   if (!MORALIS_KEY) return 0;
@@ -324,11 +373,16 @@ export async function GET(request: NextRequest) {
         ? rawSwaps
         : [];
 
-    // Get real holder count via pagination (SOL only, non-blocking)
+    // Get real holder count (SOL only): try Helius first (accurate), fall back to Moralis
     let realHolderCount = data.topHolders.length;
-    if (!EVM_CHAINS.includes(chain) && data.topHolders.length >= 100) {
-      const counted = await countMoralisHolders(address);
-      if (counted > realHolderCount) realHolderCount = counted;
+    if (!EVM_CHAINS.includes(chain)) {
+      const heliusCount = await countHeliusHolders(address);
+      if (heliusCount > 0) {
+        realHolderCount = heliusCount;
+      } else if (data.topHolders.length >= 100) {
+        const moralisCount = await countMoralisHolders(address);
+        if (moralisCount > realHolderCount) realHolderCount = moralisCount;
+      }
     }
 
     const { holderFlow, holderHistory, uniqueBuyers24h, uniqueSellers24h, holderChange24h } =
