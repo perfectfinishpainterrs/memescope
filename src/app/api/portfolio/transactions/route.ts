@@ -21,25 +21,41 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const res = await fetch(
-      `${API_URLS.MORALIS_SOL}/account/mainnet/${wallet}/swaps?limit=100`,
-      {
+    // Paginate to get all swaps (up to 500)
+    let allSwaps: any[] = [];
+    let cursor: string | null = null;
+    const MAX_PAGES = 5;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const url = new URL(`${API_URLS.MORALIS_SOL}/account/mainnet/${wallet}/swaps`);
+      url.searchParams.set("limit", "100");
+      if (cursor) url.searchParams.set("cursor", cursor);
+
+      const res = await fetch(url.toString(), {
         headers: {
           "X-API-Key": MORALIS_KEY,
           accept: "application/json",
         },
-      }
-    );
+      });
 
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `Moralis ${res.status}` },
-        { status: res.status }
-      );
+      if (!res.ok) {
+        if (page === 0) {
+          return NextResponse.json(
+            { error: `Moralis ${res.status}` },
+            { status: res.status }
+          );
+        }
+        break;
+      }
+
+      const data = await res.json();
+      const pageSwaps = data?.result || [];
+      allSwaps = allSwaps.concat(pageSwaps);
+      cursor = data?.cursor || null;
+      if (!cursor || pageSwaps.length === 0) break;
     }
 
-    const data = await res.json();
-    const swaps = data?.result || [];
+    const swaps = allSwaps;
 
     // Moralis swap structure:
     //   transactionType: "buy" | "sell"
