@@ -8,7 +8,6 @@ import {
   getMoralisWalletTokens,
   getMoralisWalletBalance,
 } from "@/lib/blockchain/moralis";
-import { getDexScreenerData } from "@/lib/services/token-data";
 
 interface Holding {
   mint: string;
@@ -78,31 +77,73 @@ export async function GET(request: NextRequest) {
         ? parseFloat(rawBalance.solana)
         : 0;
 
-    // Fetch SOL price
+    // Fetch SOL price — DEXScreener first (no rate limit), CoinGecko fallback
     let solPrice = 0;
     try {
-      const res = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+      const dexRes = await fetch(
+        "https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112"
       );
-      const data = await res.json();
-      solPrice = data.solana?.usd || 0;
+      if (dexRes.ok) {
+        const dexData = await dexRes.json();
+        const solPair = dexData.pairs?.find(
+          (p: any) => p.quoteToken?.symbol === "USDC" || p.quoteToken?.symbol === "USDT"
+        );
+        solPrice = solPair ? parseFloat(solPair.priceUsd || "0") : 0;
+      }
     } catch {}
+    if (!solPrice) {
+      try {
+        const res = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+        );
+        if (res.ok) {
+          const data = await res.json();
+          solPrice = data.solana?.usd || 0;
+        }
+      } catch {}
+    }
 
     const solValue = solBalance * solPrice;
 
-    // Enrich ALL holdings with price data from DexScreener (Moralis doesn't return prices)
+    // Enrich holdings with price data from DexScreener
+    // DEXScreener supports batch lookup: up to 30 addresses comma-separated
     const allMints = holdings.map((h) => h.mint).filter(Boolean);
-    const dexResults = await Promise.allSettled(
-      allMints.map((mint) => getDexScreenerData(mint))
-    );
-    dexResults.forEach((result, i) => {
-      if (result.status === "fulfilled" && result.value) {
-        const h = holdings[i];
-        h.priceChange24h = result.value.priceChange24h || 0;
-        if (result.value.price) h.price = result.value.price;
+    const BATCH_SIZE = 30;
+    const dexMap = new Map<string, any>();
+
+    for (let i = 0; i < allMints.length; i += BATCH_SIZE) {
+      const batch = allMints.slice(i, i + BATCH_SIZE);
+      try {
+        const res = await fetch(
+          `https://api.dexscreener.com/latest/dex/tokens/${batch.join(",")}`,
+          { next: { revalidate: 30 } }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const pairs = data.pairs || [];
+          // Group by base token, pick highest liquidity pair per token
+          for (const pair of pairs) {
+            const addr = pair.baseToken?.address;
+            if (!addr) continue;
+            const existing = dexMap.get(addr);
+            if (!existing || (pair.liquidity?.usd || 0) > (existing.liquidity?.usd || 0)) {
+              dexMap.set(addr, pair);
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Apply enrichment
+    for (const h of holdings) {
+      const pair = dexMap.get(h.mint);
+      if (pair) {
+        h.priceChange24h = pair.priceChange?.h24 || 0;
+        const dexPrice = parseFloat(pair.priceUsd || "0");
+        if (dexPrice) h.price = dexPrice;
         if (h.price) h.usdValue = h.amount * h.price;
       }
-    });
+    }
 
     // Re-sort after enrichment
     holdings.sort((a, b) => b.usdValue - a.usdValue);

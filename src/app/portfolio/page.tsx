@@ -28,6 +28,11 @@ import {
   Activity,
   Crosshair,
   Shield,
+  Trophy,
+  Skull,
+  Clock,
+  Percent,
+  ExternalLink,
 } from 'lucide-react'
 import {
   formatUsd,
@@ -87,14 +92,23 @@ const NEON_COLORS = ['#00ff88', '#00e5ff', '#ff00aa', '#ff3366', '#00ccff', '#ff
 
 function CyberTooltip({ active, payload, label }: any) {
   if (!active || !payload?.[0]) return null
+  const NON_USD_KEYS = ['trades', 'count', 'pnl']
   return (
     <div className="bg-[#070d18]/95 border border-neon-green/30 rounded px-3 py-2 shadow-[0_0_15px_rgba(0,255,136,0.15)] backdrop-blur-sm">
       <p className="text-text-dim font-mono text-[9px] uppercase tracking-widest">{label}</p>
-      {payload.map((p: any, i: number) => (
-        <p key={i} className="font-mono text-xs font-semibold" style={{ color: p.color }}>
-          {p.name}: {typeof p.value === 'number' ? (p.value < 1 ? p.value.toFixed(4) : formatUsd(p.value)) : p.value}
-        </p>
-      ))}
+      {payload.map((p: any, i: number) => {
+        const isCount = NON_USD_KEYS.includes(p.dataKey || p.name?.toLowerCase())
+        const formatted = typeof p.value === 'number'
+          ? isCount
+            ? p.value.toString()
+            : p.value < 1 ? p.value.toFixed(4) : formatUsd(p.value)
+          : p.value
+        return (
+          <p key={i} className="font-mono text-xs font-semibold" style={{ color: p.color }}>
+            {p.name}: {formatted}
+          </p>
+        )
+      })}
     </div>
   )
 }
@@ -110,7 +124,7 @@ export default function PortfolioPage() {
   const [analysisLoading, setAnalysisLoading] = useState(false)
   const [tokenAdvice, setTokenAdvice] = useState<Record<string, string>>({})
   const [tokenAdviceLoading, setTokenAdviceLoading] = useState<Record<string, boolean>>({})
-  const [activeTab, setActiveTab] = useState<'holdings' | 'trades' | 'charts'>('holdings')
+  const [activeTab, setActiveTab] = useState<'holdings' | 'trades' | 'breakdown'>('holdings')
 
   const walletAddress = publicKey?.toBase58() || null
 
@@ -118,7 +132,7 @@ export default function PortfolioPage() {
     if (!walletAddress) return
     setLoading(true)
     try {
-      const res = await fetch(`/api/portfolio?wallet=${walletAddress}`)
+      const res = await fetch(`/api/portfolio?wallet=${walletAddress}&t=${Date.now()}`)
       if (res.ok) setPortfolio(await res.json())
     } catch {}
     setLoading(false)
@@ -128,10 +142,16 @@ export default function PortfolioPage() {
     if (!walletAddress) return
     setTxLoading(true)
     try {
-      const res = await fetch(`/api/portfolio/transactions?wallet=${walletAddress}`)
+      const res = await fetch(`/api/portfolio/transactions?wallet=${walletAddress}&t=${Date.now()}`)
       if (res.ok) {
         const data = await res.json()
-        setTransactions(data.transactions || [])
+        const solPrice = data.solPrice || 0
+        // If usdValue is 0, calculate from quoteAmount * solPrice
+        const txs = (data.transactions || []).map((tx: Transaction) => ({
+          ...tx,
+          usdValue: tx.usdValue > 0 ? tx.usdValue : tx.quoteAmount * solPrice,
+        }))
+        setTransactions(txs)
       }
     } catch {}
     setTxLoading(false)
@@ -272,6 +292,116 @@ export default function PortfolioPage() {
   const sellCount = transactions.filter((t) => t.type === 'SELL').length
   const totalPnl = pnlByToken.reduce((s, t) => s + t.pnl, 0)
 
+  // ── Token Breakdown: cost basis, realized PnL, unrealized PnL ──
+  interface TokenBreakdown {
+    symbol: string
+    mint: string
+    totalBought: number
+    totalSold: number
+    totalSpent: number
+    totalReceived: number
+    realizedPnl: number
+    avgBuyPrice: number
+    currentPrice: number
+    currentValue: number
+    costBasis: number
+    unrealizedPnl: number
+    unrealizedPct: number
+    holdingAmount: number
+    tradeCount: number
+    firstBuy: string
+    lastTrade: string
+    status: 'holding' | 'closed' | 'sold_partial'
+  }
+
+  const tokenBreakdown = useMemo(() => {
+    if (!transactions.length) return [] as TokenBreakdown[]
+    const map = new Map<string, {
+      symbol: string; mint: string; bought: number; sold: number
+      spent: number; received: number; trades: number
+      firstBuy: string; lastTrade: string
+    }>()
+
+    transactions.forEach((tx) => {
+      const key = tx.tokenAddress
+      if (!map.has(key)) {
+        map.set(key, {
+          symbol: tx.tokenSymbol, mint: tx.tokenAddress,
+          bought: 0, sold: 0, spent: 0, received: 0, trades: 0,
+          firstBuy: tx.timestamp, lastTrade: tx.timestamp,
+        })
+      }
+      const t = map.get(key)!
+      t.trades++
+      if (tx.timestamp < t.firstBuy) t.firstBuy = tx.timestamp
+      if (tx.timestamp > t.lastTrade) t.lastTrade = tx.timestamp
+      if (tx.type === 'BUY') {
+        t.bought += tx.tokenAmount
+        t.spent += tx.usdValue
+      } else {
+        t.sold += tx.tokenAmount
+        t.received += tx.usdValue
+      }
+    })
+
+    const result: TokenBreakdown[] = []
+    map.forEach((t) => {
+      const holding = portfolio?.holdings?.find((h) => h.mint === t.mint)
+      const holdingAmount = holding?.amount || 0
+      const currentPrice = holding?.price || 0
+      const currentValue = holdingAmount * currentPrice
+      const avgBuyPrice = t.bought > 0 ? t.spent / t.bought : 0
+      const costBasis = holdingAmount * avgBuyPrice
+      const realizedPnl = t.received - (t.sold > 0 && t.bought > 0 ? (t.sold / t.bought) * t.spent : 0)
+      const unrealizedPnl = currentValue - costBasis
+      const unrealizedPct = costBasis > 0 ? ((currentValue - costBasis) / costBasis) * 100 : 0
+
+      result.push({
+        symbol: t.symbol,
+        mint: t.mint,
+        totalBought: t.bought,
+        totalSold: t.sold,
+        totalSpent: t.spent,
+        totalReceived: t.received,
+        realizedPnl,
+        avgBuyPrice,
+        currentPrice,
+        currentValue,
+        costBasis,
+        unrealizedPnl,
+        unrealizedPct,
+        holdingAmount,
+        tradeCount: t.trades,
+        firstBuy: t.firstBuy,
+        lastTrade: t.lastTrade,
+        status: holdingAmount <= 0 ? 'closed' : t.sold > 0 ? 'sold_partial' : 'holding',
+      })
+    })
+
+    return result.sort((a, b) => b.totalSpent - a.totalSpent)
+  }, [transactions, portfolio])
+
+  // Win rate (tokens with positive realized PnL)
+  const closedTokens = tokenBreakdown.filter((t) => t.totalSold > 0 && t.totalBought > 0)
+  const winningTokens = closedTokens.filter((t) => t.realizedPnl > 0)
+  const winRate = closedTokens.length > 0 ? (winningTokens.length / closedTokens.length) * 100 : 0
+
+  // Best and worst trade (by realized PnL)
+  const bestTrade = closedTokens.length > 0 ? closedTokens.reduce((a, b) => a.realizedPnl > b.realizedPnl ? a : b) : null
+  const worstTrade = closedTokens.length > 0 ? closedTokens.reduce((a, b) => a.realizedPnl < b.realizedPnl ? a : b) : null
+
+  // Unrealized PnL total
+  const totalUnrealizedPnl = tokenBreakdown.reduce((s, t) => s + t.unrealizedPnl, 0)
+  const totalCostBasis = tokenBreakdown.reduce((s, t) => s + t.costBasis, 0)
+
+  // Average hold time (from first buy to last trade, for closed positions)
+  const avgHoldDays = closedTokens.length > 0
+    ? closedTokens.reduce((s, t) => {
+        const diff = new Date(t.lastTrade).getTime() - new Date(t.firstBuy).getTime()
+        return s + diff / (1000 * 60 * 60 * 24)
+      }, 0) / closedTokens.length
+    : 0
+
   // Not connected
   if (!connected || !walletAddress) {
     return (
@@ -327,7 +457,7 @@ export default function PortfolioPage() {
         </div>
 
         {/* ═══ STAT CARDS ROW ═══ */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
           {[
             {
               label: 'Total Value',
@@ -360,11 +490,34 @@ export default function PortfolioPage() {
               glow: '',
             },
             {
-              label: 'Est. PnL',
+              label: 'Win Rate',
+              value: txLoading ? null : `${winRate.toFixed(0)}%`,
+              sub: `${winningTokens.length}/${closedTokens.length} tokens`,
+              icon: Percent,
+              color: winRate >= 50 ? 'text-neon-green' : 'text-neon-red',
+              glow: '',
+            },
+            {
+              label: 'Realized PnL',
               value: loading ? null : `${totalPnl >= 0 ? '+' : ''}${formatUsd(totalPnl)}`,
               icon: totalPnl >= 0 ? TrendingUp : TrendingDown,
               color: totalPnl >= 0 ? 'text-neon-green' : 'text-neon-red',
               glow: totalPnl >= 0 ? 'shadow-[0_0_20px_rgba(0,255,136,0.08)]' : 'shadow-[0_0_20px_rgba(255,51,102,0.08)]',
+            },
+            {
+              label: 'Unrealized PnL',
+              value: loading ? null : `${totalUnrealizedPnl >= 0 ? '+' : ''}${formatUsd(totalUnrealizedPnl)}`,
+              sub: totalCostBasis > 0 ? `on ${formatUsd(totalCostBasis)} cost` : undefined,
+              icon: totalUnrealizedPnl >= 0 ? TrendingUp : TrendingDown,
+              color: totalUnrealizedPnl >= 0 ? 'text-neon-green' : 'text-neon-red',
+              glow: '',
+            },
+            {
+              label: 'Avg Hold',
+              value: txLoading ? null : avgHoldDays < 1 ? `${(avgHoldDays * 24).toFixed(0)}h` : `${avgHoldDays.toFixed(1)}d`,
+              icon: Clock,
+              color: 'text-neon-cyan',
+              glow: '',
             },
           ].map((stat) => (
             <Card key={stat.label} className={cn('relative overflow-hidden', stat.glow)} glow>
@@ -520,7 +673,7 @@ export default function PortfolioPage() {
 
         {/* ═══ TAB SWITCHER ═══ */}
         <div className="flex items-center gap-1 bg-[#070d18] border border-[#121e36] rounded-lg p-1 w-fit">
-          {(['holdings', 'trades'] as const).map((tab) => (
+          {(['holdings', 'trades', 'breakdown'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -680,6 +833,117 @@ export default function PortfolioPage() {
               </div>
             )}
           </Card>
+        )}
+
+        {/* ═══ TOKEN BREAKDOWN ═══ */}
+        {activeTab === 'breakdown' && (
+          <Card glow>
+            <div className="flex items-center gap-2 mb-3">
+              <Target className="w-3.5 h-3.5 text-neon-cyan" />
+              <span className="text-[10px] text-text-dim uppercase tracking-widest font-mono font-semibold">
+                Token Breakdown
+              </span>
+              <span className="text-[9px] text-text-dim font-mono ml-auto">{tokenBreakdown.length} tokens traded</span>
+            </div>
+            {txLoading ? (
+              <div className="space-y-2">
+                {[...Array(5)].map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
+              </div>
+            ) : tokenBreakdown.length > 0 ? (
+              <div className="space-y-1">
+                <div className="grid grid-cols-[1fr_70px_70px_80px_80px_80px_60px] gap-2 px-3 py-1.5 text-[9px] text-text-dim uppercase tracking-widest font-mono border-b border-border">
+                  <span>Token</span>
+                  <span className="text-right">Spent</span>
+                  <span className="text-right">Received</span>
+                  <span className="text-right">Realized</span>
+                  <span className="text-right">Bag Value</span>
+                  <span className="text-right">Unrealized</span>
+                  <span className="text-right">Status</span>
+                </div>
+                {tokenBreakdown.map((t) => (
+                  <div key={t.mint} className="grid grid-cols-[1fr_70px_70px_80px_80px_80px_60px] gap-2 items-center px-3 py-2.5 rounded-lg hover:bg-bg-card border border-transparent hover:border-neon-green/10 transition-all">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Link href={`/token/${t.mint}?chain=SOL`} className="flex items-center gap-2 min-w-0 group">
+                        <div className="w-7 h-7 rounded-full bg-bg-panel border border-border flex items-center justify-center text-[10px] font-mono font-bold text-neon-green flex-shrink-0">
+                          {t.symbol?.charAt(0) || '?'}
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-xs font-mono font-bold text-text-primary block truncate group-hover:text-neon-green transition-colors">{t.symbol}</span>
+                          <span className="text-[9px] font-mono text-text-dim">{t.tradeCount} trades</span>
+                        </div>
+                      </Link>
+                    </div>
+                    <span className="text-[11px] font-mono text-text-secondary text-right">{formatUsd(t.totalSpent)}</span>
+                    <span className="text-[11px] font-mono text-text-secondary text-right">{formatUsd(t.totalReceived)}</span>
+                    <span className={cn('text-[11px] font-mono text-right font-semibold', t.realizedPnl >= 0 ? 'text-neon-green' : 'text-neon-red')}>
+                      {t.realizedPnl >= 0 ? '+' : ''}{formatUsd(t.realizedPnl)}
+                    </span>
+                    <span className="text-[11px] font-mono text-text-secondary text-right">
+                      {t.currentValue > 0 ? formatUsd(t.currentValue) : '—'}
+                    </span>
+                    <span className={cn('text-[11px] font-mono text-right font-semibold', t.unrealizedPnl >= 0 ? 'text-neon-green' : 'text-neon-red')}>
+                      {t.holdingAmount > 0 ? `${t.unrealizedPnl >= 0 ? '+' : ''}${formatUsd(t.unrealizedPnl)}` : '—'}
+                    </span>
+                    <div className="flex justify-end">
+                      <Badge variant={t.status === 'closed' ? 'default' : t.status === 'holding' ? 'success' : 'warning'}>
+                        {t.status === 'closed' ? 'CLOSED' : t.status === 'holding' ? 'HODL' : 'PARTIAL'}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-text-dim font-mono text-sm text-center py-8">No trade data</div>
+            )}
+          </Card>
+        )}
+
+        {/* ═══ BEST / WORST TRADE ═══ */}
+        {(bestTrade || worstTrade) && !txLoading && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {bestTrade && bestTrade.realizedPnl > 0 && (
+              <Card className="shadow-[0_0_20px_rgba(0,255,136,0.08)]" glow>
+                <div className="flex items-center gap-2 mb-2">
+                  <Trophy className="w-4 h-4 text-neon-green" />
+                  <span className="text-[10px] text-text-dim uppercase tracking-widest font-mono font-semibold">Best Trade</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Link href={`/token/${bestTrade.mint}?chain=SOL`} className="text-sm font-mono font-bold text-text-primary hover:text-neon-green transition-colors">
+                      ${bestTrade.symbol}
+                    </Link>
+                    <span className="text-[10px] text-text-dim font-mono block">
+                      Spent {formatUsd(bestTrade.totalSpent)} → Got {formatUsd(bestTrade.totalReceived)}
+                    </span>
+                  </div>
+                  <span className="text-lg font-mono font-bold text-neon-green">
+                    +{formatUsd(bestTrade.realizedPnl)}
+                  </span>
+                </div>
+              </Card>
+            )}
+            {worstTrade && worstTrade.realizedPnl < 0 && (
+              <Card className="shadow-[0_0_20px_rgba(255,51,102,0.08)]" glow>
+                <div className="flex items-center gap-2 mb-2">
+                  <Skull className="w-4 h-4 text-neon-red" />
+                  <span className="text-[10px] text-text-dim uppercase tracking-widest font-mono font-semibold">Worst Trade</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Link href={`/token/${worstTrade.mint}?chain=SOL`} className="text-sm font-mono font-bold text-text-primary hover:text-neon-green transition-colors">
+                      ${worstTrade.symbol}
+                    </Link>
+                    <span className="text-[10px] text-text-dim font-mono block">
+                      Spent {formatUsd(worstTrade.totalSpent)} → Got {formatUsd(worstTrade.totalReceived)}
+                    </span>
+                  </div>
+                  <span className="text-lg font-mono font-bold text-neon-red">
+                    {formatUsd(worstTrade.realizedPnl)}
+                  </span>
+                </div>
+              </Card>
+            )}
+          </div>
         )}
 
         {/* ═══ AI TRADE ANALYZER ═══ */}

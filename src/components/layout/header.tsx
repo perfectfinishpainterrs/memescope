@@ -5,8 +5,8 @@ import { cn, shortenAddress } from '@/lib/utils'
 import { createSupabaseBrowser } from '@/lib/db/supabase-browser'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import { Menu, X, Wallet } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Menu, X, Wallet, Shield } from 'lucide-react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { useWalletModal } from '@solana/wallet-adapter-react-ui'
 import type { User } from '@supabase/supabase-js'
@@ -22,8 +22,10 @@ export function Header() {
   const pathname = usePathname()
   const [user, setUser] = useState<User | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
-  const { publicKey, disconnect, connected } = useWallet()
+  const [authLoading, setAuthLoading] = useState(false)
+  const { publicKey, disconnect, connected, signMessage } = useWallet()
   const { setVisible } = useWalletModal()
+  const authAttempted = useRef<string | null>(null)
 
   useEffect(() => {
     const supabase = createSupabaseBrowser()
@@ -34,10 +36,76 @@ export function Header() {
     return () => subscription.unsubscribe()
   }, [])
 
-  const handleLogout = async () => {
+  // Auto-authenticate when wallet connects
+  const authenticateWallet = useCallback(async () => {
+    if (!publicKey || !signMessage || !connected) return
+    if (authLoading) return
+
+    const walletAddr = publicKey.toBase58()
+
+    // Don't re-auth if already authenticated with this wallet
+    if (authAttempted.current === walletAddr) return
+    // Don't re-auth if already signed in
+    if (user?.user_metadata?.wallet_address === walletAddr) return
+
+    authAttempted.current = walletAddr
+    setAuthLoading(true)
+
+    try {
+      const timestamp = Math.floor(Date.now() / 1000)
+      const message = `Sign in to MEMESCOPE\nWallet: ${walletAddr}\nTimestamp: ${timestamp}`
+      const messageBytes = new TextEncoder().encode(message)
+
+      // Request wallet signature
+      const signature = await signMessage(messageBytes)
+
+      // Send to backend for verification + Supabase session
+      const res = await fetch('/api/auth/wallet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publicKey: Buffer.from(publicKey.toBytes()).toString('base64'),
+          signature: Buffer.from(signature).toString('base64'),
+          message,
+        }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        console.error('Wallet auth failed:', err.error)
+        setAuthLoading(false)
+        return
+      }
+
+      const { session } = await res.json()
+
+      // Set the Supabase session in the browser
+      const supabase = createSupabaseBrowser()
+      await supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      })
+    } catch (err: any) {
+      // User rejected signature or other error — that's fine
+      console.error('Wallet auth error:', err.message)
+      authAttempted.current = null // Allow retry
+    } finally {
+      setAuthLoading(false)
+    }
+  }, [publicKey, signMessage, connected, authLoading, user])
+
+  useEffect(() => {
+    if (connected && publicKey && !user) {
+      authenticateWallet()
+    }
+  }, [connected, publicKey, user, authenticateWallet])
+
+  const handleDisconnect = async () => {
     const supabase = createSupabaseBrowser()
     await supabase.auth.signOut()
+    await disconnect()
     setUser(null)
+    authAttempted.current = null
   }
 
   return (
@@ -88,6 +156,14 @@ export function Header() {
             <span className="text-glow-green">LIVE</span>
           </div>
 
+          {/* Auth status indicator */}
+          {user && (
+            <div className="hidden md:flex items-center gap-1 px-2 py-0.5 border border-neon-cyan/20 bg-neon-cyan/5 rounded">
+              <Shield className="w-3 h-3 text-neon-cyan" />
+              <span className="text-[10px] font-mono text-neon-cyan">AUTH</span>
+            </div>
+          )}
+
           {/* Wallet Connect (desktop) */}
           <div className="hidden md:flex items-center gap-3">
             {connected && publicKey ? (
@@ -98,8 +174,13 @@ export function Header() {
                     {shortenAddress(publicKey.toBase58(), 4)}
                   </span>
                 </div>
+                {authLoading && (
+                  <span className="text-[10px] font-mono text-neon-yellow animate-pulse">
+                    Signing in...
+                  </span>
+                )}
                 <button
-                  onClick={() => disconnect()}
+                  onClick={handleDisconnect}
                   className="text-[10px] font-mono text-text-dim hover:text-neon-red transition-colors"
                 >
                   Disconnect
@@ -153,9 +234,10 @@ export function Header() {
                     <span className="text-xs font-mono text-neon-green">
                       {shortenAddress(publicKey.toBase58(), 4)}
                     </span>
+                    {user && <Shield className="w-3 h-3 text-neon-cyan ml-1" />}
                   </div>
                   <button
-                    onClick={() => { disconnect(); setMenuOpen(false) }}
+                    onClick={() => { handleDisconnect(); setMenuOpen(false) }}
                     className="text-xs font-mono text-text-dim hover:text-neon-red transition-colors"
                   >
                     Disconnect

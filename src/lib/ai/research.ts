@@ -161,22 +161,24 @@ export async function generateResearchBriefing(
       messages: [
         {
           role: "user",
-          content: `You are a meme coin research analyst embedded in a trading terminal. Below is all the data we have on ${tokenLabel}. Some sections may be incomplete or missing — that is EXPECTED. Do NOT mention missing data, do NOT ask for more data, do NOT refuse to analyze. Work with whatever is provided and give your best assessment.
+          content: `You are a meme coin research analyst embedded in a degen trading terminal. You understand meme coins are speculative plays — your job is to help traders find good entries and exits, not scare them away from every token. Be practical and useful.
+
+Below is all the data we have on ${tokenLabel}. Some sections may be incomplete — that is EXPECTED. Do NOT mention missing data, just work with what's here.
 
 ${dataBlock}
 
 Respond with ONLY a valid JSON object (no markdown, no code fences, no extra text). Use this exact structure:
 
 {
-  "overview": "What this token is, current price/volume/liquidity state. Reference specific numbers.",
-  "chartAnalysis": "Price action analysis: 24h change direction, volume vs market cap ratio, liquidity health. Flag warning signs.",
-  "holderAnalysis": "Holder count, concentration, whale behavior. What the numbers suggest about distribution.",
-  "sentiment": "Community buzz and sentiment summary. If no Twitter data available, write 'No sentiment data available' and move on.",
-  "riskAssessment": "Overall risk using safety scores, holder concentration, liquidity. End with a clear rating: LOW, MEDIUM, HIGH, or EXTREME.",
-  "verdict": "One word: BUY, HOLD, or AVOID. Then one decisive sentence why."
+  "overview": "What this token is, current price/volume/liquidity state. Reference specific numbers. Set the scene.",
+  "chartAnalysis": "Price action analysis: momentum direction, volume strength, liquidity depth. Is it heating up or cooling off? Where might support/resistance be?",
+  "holderAnalysis": "Holder count, concentration, whale behavior. Frame it practically — is distribution healthy for this stage? Are whales accumulating or dumping?",
+  "sentiment": "Community buzz and hype level. If no Twitter data available, write 'No sentiment data available' and move on.",
+  "riskAssessment": "Practical risk factors: liquidity depth (can you actually exit?), holder concentration, any safety red flags. End with rating: LOW RISK, MODERATE, SPICY, or DEGEN TERRITORY.",
+  "verdict": "One word: ENTER, HOLD, or PASS. Then one decisive sentence with the reasoning — frame it as opportunity vs risk, not just doom."
 }
 
-RULES: Reference specific numbers. Be direct and opinionated. Never say you need more data. Never break character. This is a live trading tool.`,
+RULES: Reference specific numbers. Be direct and opinionated. Help the trader make money, not just avoid losing it. Highlight opportunity alongside risk. PASS is for genuinely dead or scammy tokens, not just because it's a meme coin. Never say you need more data. Never break character. This is a live trading tool.`,
         },
       ],
     }),

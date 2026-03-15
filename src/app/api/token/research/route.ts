@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateResearchBriefing } from "@/lib/ai/research";
 import { rateLimit } from "@/lib/middleware/rate-limit";
+import { checkAiLimit } from "@/lib/middleware/ai-limit";
 
 function getIp(request: NextRequest): string {
   return (
@@ -14,12 +15,6 @@ function getIp(request: NextRequest): string {
     "127.0.0.1"
   );
 }
-
-// IP-based rate limit (20/hour)
-const researchUsage = new Map<
-  string,
-  { count: number; resetAt: number }
->();
 
 export async function POST(request: NextRequest) {
   const ip = getIp(request);
@@ -31,23 +26,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Per-IP 20/hour limit
-  const now = Date.now();
-  const usage = researchUsage.get(ip);
-  if (usage && now < usage.resetAt) {
-    if (usage.count >= 20) {
-      return NextResponse.json(
-        { error: "Research limit: 20 requests per hour" },
-        { status: 429 }
-      );
-    }
-    usage.count++;
-  } else {
-    researchUsage.set(ip, {
-      count: 1,
-      resetAt: now + 3_600_000,
-    });
-  }
+  // Auth + daily AI limit (10/day per user)
+  const aiLimit = await checkAiLimit();
+  if (!aiLimit.allowed) return aiLimit.error!;
 
   const body = await request.json();
 
@@ -60,7 +41,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const briefing = await generateResearchBriefing(body);
-    return NextResponse.json(briefing);
+    return NextResponse.json({ ...briefing, aiRemaining: aiLimit.remaining });
   } catch (err: any) {
     return NextResponse.json(
       { error: err.message },

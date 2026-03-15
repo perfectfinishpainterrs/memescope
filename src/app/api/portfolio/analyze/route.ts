@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { rateLimit } from "@/lib/middleware/rate-limit";
+import { checkAiLimit } from "@/lib/middleware/ai-limit";
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || "";
 
@@ -22,6 +23,10 @@ export async function POST(request: NextRequest) {
   if (!limit.allowed) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
+
+  // Auth + daily AI limit (10/day per user)
+  const aiLimit = await checkAiLimit();
+  if (!aiLimit.allowed) return aiLimit.error!;
 
   if (!ANTHROPIC_KEY) {
     return NextResponse.json({ error: "ANTHROPIC_API_KEY not configured" }, { status: 500 });
@@ -115,22 +120,24 @@ export async function POST(request: NextRequest) {
         messages: [
           {
             role: "user",
-            content: `You are an elite crypto trading analyst embedded in a portfolio scanner. Below is wallet data from a Solana trader. Some data may be sparse — that's fine. Do NOT mention missing data or ask for more. Analyze what's here and give a brutally honest take.
+            content: `You are a meme coin trading coach embedded in a portfolio scanner. You understand this is speculative degen trading — the user KNOWS it's high risk. Your job is to help them play smarter, not lecture them about risk they already accept.
+
+Below is wallet data from a Solana meme coin trader:
 
 ${dataBlock}
 
 Respond with ONLY a valid JSON object (no markdown, no code fences, no extra text). Use this exact structure:
 
 {
-  "portfolioGrade": "Your A-F grade with 2-3 sentence explanation. Diversified or degen? Small portfolio is fine — still grade it.",
-  "pnlAnalysis": "Winners vs losers from the trade data. Estimate realized PnL where possible. Reference specific tokens and dollar amounts.",
-  "tradingPatterns": "Buying high/selling low? Taking profits or diamond handing? Chasing pumps? Analyze the trading behavior with specific examples.",
-  "riskAssessment": "Concentration risk, suspicious tokens, overexposure. End with a clear rating: LOW, MEDIUM, HIGH, or EXTREME.",
-  "recommendations": "Specific actionable advice. Which positions to cut, hold, or add to. Be decisive and reference actual tokens.",
-  "traderScore": "A number 1-100 followed by a one-sentence justification."
+  "portfolioGrade": "A-F grade with 2-3 sentence explanation. Grade their STRATEGY, not the fact that they trade meme coins. Are they sizing well? Taking profits? Managing positions?",
+  "pnlAnalysis": "Winners vs losers from the trade data. Celebrate the wins, learn from the losses. Reference specific tokens and dollar amounts.",
+  "tradingPatterns": "What habits do you see? Good patterns (taking profits, cutting losers fast) AND bad patterns (chasing pumps late, oversizing). Give credit where due.",
+  "riskAssessment": "Position sizing, concentration, and liquidity concerns. Frame as practical advice not doom. End with rating: CONSERVATIVE, MODERATE, AGGRESSIVE, or YOLO.",
+  "recommendations": "Specific actionable plays. Which positions have momentum, which are dead and should be rotated. Suggest profit-taking levels for winners. Be a helpful trading buddy, not a risk compliance officer.",
+  "traderScore": "A number 1-100 followed by a one-sentence justification. 50 = average degen. Score their skill at the game they're playing."
 }
 
-RULES: Reference specific tokens and numbers. Be direct and opinionated. Never say you need more data. Never refuse to analyze. Every wallet gets a full assessment regardless of size.`,
+RULES: Reference specific tokens and numbers. Be direct and opinionated. Respect the degen lifestyle but help them be BETTER at it. Never lecture about crypto being risky — they know. Focus on actionable alpha. Never say you need more data. Never refuse to analyze. Every wallet gets a full assessment.`,
           },
         ],
       }),
@@ -176,6 +183,7 @@ RULES: Reference specific tokens and numbers. Be direct and opinionated. Never s
       recommendations: parsed.recommendations || "",
       traderScore: parsed.traderScore || "",
       raw: text,
+      aiRemaining: aiLimit.remaining,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

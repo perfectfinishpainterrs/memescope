@@ -10,7 +10,9 @@ export function rateLimit(
   ip: string,
   authenticated: boolean
 ): RateLimitResult {
-  const limit = authenticated ? 30 : 10;
+  // Localhost gets higher limit for development
+  const isLocal = ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
+  const limit = isLocal ? 200 : authenticated ? 60 : 20;
   const windowMs = 60_000;
   const now = Date.now();
 

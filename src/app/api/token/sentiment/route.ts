@@ -10,6 +10,7 @@ import {
   calculateSentiment,
 } from "@/lib/twitter";
 import { rateLimit } from "@/lib/middleware/rate-limit";
+import { checkAiLimit } from "@/lib/middleware/ai-limit";
 
 function getIp(request: NextRequest): string {
   return (
@@ -28,6 +29,10 @@ export async function GET(request: NextRequest) {
       { status: 429 }
     );
   }
+
+  // Auth + daily AI limit (10/day per user)
+  const aiLimit = await checkAiLimit();
+  if (!aiLimit.allowed) return aiLimit.error!;
 
   const address = request.nextUrl.searchParams.get("address");
   const ticker = request.nextUrl.searchParams.get("ticker");
@@ -66,6 +71,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       sentiment,
       tweets: allTweets.slice(0, 50), // Top 50 most relevant
+      aiRemaining: aiLimit.remaining,
     });
   } catch (err: any) {
     return NextResponse.json(
